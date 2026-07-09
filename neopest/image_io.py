@@ -1,11 +1,15 @@
-"""Still-image loading helpers (scaffold)."""
+"""Still-image loading, probing, and hashing helpers."""
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
-SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
+from PySide6.QtGui import QImageReader
+
+SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+HASH_CHUNK_SIZE = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -22,10 +26,32 @@ def is_supported_image(path: Path) -> bool:
 
 
 def load_image_info(path: Path) -> ImageLoadInfo:
-    """Return basic image dimensions without decoding full pixel data yet."""
+    """Return basic image dimensions using Qt image probing."""
     resolved = path.expanduser().resolve()
     if not is_supported_image(resolved):
         raise ValueError(f"Unsupported image format: {resolved.suffix}")
+    if not resolved.is_file():
+        raise FileNotFoundError(resolved)
 
-    # Real decoding will use OpenCV or Pillow in a later phase.
+    reader = QImageReader(str(resolved))
+    size = reader.size()
+    if size.isValid():
+        return ImageLoadInfo(
+            path=resolved,
+            width_px=size.width(),
+            height_px=size.height(),
+        )
     return ImageLoadInfo(path=resolved, width_px=None, height_px=None)
+
+
+def compute_image_hash(path: Path, *, algorithm: str = "sha256") -> str:
+    """Return a content hash prefixed with the algorithm name."""
+    resolved = path.expanduser().resolve()
+    digest = hashlib.new(algorithm)
+    with resolved.open("rb") as handle:
+        while True:
+            chunk = handle.read(HASH_CHUNK_SIZE)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return f"{algorithm}:{digest.hexdigest()}"

@@ -9,7 +9,7 @@ class TestImports(unittest.TestCase):
     def test_package_import(self) -> None:
         import neopest
 
-        self.assertEqual(neopest.__version__, "0.1.0")
+        self.assertEqual(neopest.__version__, "0.2.0")
 
     def test_core_modules_import(self) -> None:
         modules = [

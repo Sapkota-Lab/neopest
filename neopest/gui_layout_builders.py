@@ -33,56 +33,136 @@ from neopest.gui_styles import (
     apply_workspace_preview_panel_style,
     make_vertical_divider,
 )
+from neopest.metadata import SampleRecord, WorkspaceMetadata
+from neopest.results import AnalysisStatus, CalibrationStatus
 
 if TYPE_CHECKING:
     from neopest.gui import MainWindow
 
 
-def build_inspector_panel(parent: QWidget | None = None) -> QWidget:
-    """Right-side inspector / contextual settings placeholder."""
-    panel = QWidget(parent)
-    apply_inspector_panel_style(panel)
-    panel.setMinimumWidth(INSPECTOR_PANEL_MIN_WIDTH)
-    panel.setMaximumWidth(INSPECTOR_PANEL_MAX_WIDTH)
-    panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+class SampleInspectorPanel(QWidget):
+    """Right-side inspector showing workspace or sample metadata."""
 
-    layout = QVBoxLayout(panel)
-    apply_panel_margins(layout)
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        apply_inspector_panel_style(self)
+        self.setMinimumWidth(INSPECTOR_PANEL_MIN_WIDTH)
+        self.setMaximumWidth(INSPECTOR_PANEL_MAX_WIDTH)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
-    title = QLabel("Inspector")
-    apply_section_title_style(title)
-    layout.addWidget(title)
+        layout = QVBoxLayout(self)
+        apply_panel_margins(layout)
 
-    subtitle = QLabel("Sample details and analysis settings")
-    apply_hint_style(subtitle)
-    layout.addWidget(subtitle)
+        title = QLabel("Inspector")
+        apply_section_title_style(title)
+        layout.addWidget(title)
 
-    layout.addWidget(make_vertical_divider())
+        subtitle = QLabel("Sample details and analysis settings")
+        apply_hint_style(subtitle)
+        layout.addWidget(subtitle)
+        layout.addWidget(make_vertical_divider())
 
-    fields = [
-        ("Sample", "—"),
-        ("Calibration", "Uncalibrated"),
-        ("Leaf area", "—"),
-        ("Disease area", "—"),
-        ("Disease %", "—"),
-    ]
-    for label_text, value_text in fields:
-        row = QHBoxLayout()
-        row.setSpacing(CONTROL_ROW_SPACING)
-        label = QLabel(label_text)
-        apply_hint_style(label)
-        value = QLabel(value_text)
-        value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        row.addWidget(label)
-        row.addStretch(1)
-        row.addWidget(value)
-        layout.addLayout(row)
+        self._value_labels: dict[str, QLabel] = {}
+        field_defs = [
+            ("sample", "Sample"),
+            ("sample_id", "Sample ID"),
+            ("condition_group_id", "Condition Group ID"),
+            ("raw_image_path", "Raw Image"),
+            ("original_source_path", "Original Source"),
+            ("dimensions", "Dimensions"),
+            ("image_hash", "Image Hash"),
+            ("calibration", "Calibration"),
+            ("analysis", "Analysis"),
+        ]
+        for key, label_text in field_defs:
+            row = QHBoxLayout()
+            row.setSpacing(CONTROL_ROW_SPACING)
+            label = QLabel(label_text)
+            apply_hint_style(label)
+            value = QLabel("—")
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            value.setWordWrap(True)
+            row.addWidget(label)
+            row.addStretch(1)
+            row.addWidget(value)
+            layout.addLayout(row)
+            self._value_labels[key] = value
 
-    layout.addStretch(1)
-    return panel
+        layout.addStretch(1)
+        self.show_workspace_state(None)
+
+    def show_workspace_state(self, workspace: WorkspaceMetadata | None) -> None:
+        if workspace is None:
+            self._value_labels["sample"].setText("No workspace open")
+        else:
+            self._value_labels["sample"].setText("No sample selected")
+        for key in (
+            "sample_id",
+            "condition_group_id",
+            "raw_image_path",
+            "original_source_path",
+            "dimensions",
+            "image_hash",
+        ):
+            self._value_labels[key].setText("—")
+        self._value_labels["calibration"].setText("—")
+        self._value_labels["analysis"].setText("—")
+
+    def show_sample(self, sample: SampleRecord, workspace: WorkspaceMetadata) -> None:
+        self._value_labels["sample"].setText(sample.display_name)
+        self._value_labels["sample_id"].setText(sample.sample_id)
+        self._value_labels["condition_group_id"].setText(sample.condition_group_id)
+        self._value_labels["raw_image_path"].setText(sample.raw_image_path)
+        self._value_labels["original_source_path"].setText(
+            sample.original_source_path or "—"
+        )
+
+        if sample.width_px is not None and sample.height_px is not None:
+            self._value_labels["dimensions"].setText(
+                f"{sample.width_px} × {sample.height_px} px"
+            )
+        else:
+            self._value_labels["dimensions"].setText("—")
+
+        self._value_labels["image_hash"].setText(sample.image_hash or "—")
+        self._value_labels["calibration"].setText(
+            _format_calibration_status(sample.calibration_status)
+        )
+        self._value_labels["analysis"].setText(
+            _format_analysis_status(sample.analysis_status)
+        )
+
+        group = workspace.get_condition_group(sample.condition_group_id)
+        if group is not None:
+            self._value_labels["condition_group_id"].setText(
+                f"{group.display_name}\n({sample.condition_group_id})"
+            )
 
 
-def build_workbench_controls(parent: QWidget | None = None) -> tuple[QWidget, QPushButton]:
+def _format_calibration_status(status: CalibrationStatus) -> str:
+    if status is CalibrationStatus.UNCALIBRATED:
+        return "Uncalibrated"
+    if status is CalibrationStatus.CALIBRATED:
+        return "Calibrated"
+    return "Missing"
+
+
+def _format_analysis_status(status: AnalysisStatus) -> str:
+    if status is AnalysisStatus.NOT_RUN:
+        return "Not Run"
+    if status is AnalysisStatus.COMPLETE:
+        return "Complete"
+    if status is AnalysisStatus.PENDING:
+        return "Pending"
+    return "Failed"
+
+
+def build_inspector_panel(parent: QWidget | None = None) -> SampleInspectorPanel:
+    """Right-side inspector / contextual settings panel."""
+    return SampleInspectorPanel(parent)
+
+
+def build_workbench_controls(parent: QWidget | None = None) -> tuple[QWidget, QPushButton, QLabel]:
     """Lower status/control strip beneath the main workspace."""
     panel = QWidget(parent)
     apply_workbench_controls_panel_style(panel)
@@ -92,16 +172,16 @@ def build_workbench_controls(parent: QWidget | None = None) -> tuple[QWidget, QP
     layout.setContentsMargins(PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN)
     layout.setSpacing(12)
 
-    status = QLabel("Ready — Phase 0 scaffold")
+    status = QLabel("Ready")
     apply_hint_style(status)
     layout.addWidget(status, stretch=1)
 
     run_button = QPushButton("Run Analysis")
     run_button.setEnabled(False)
-    run_button.setToolTip("Analysis pipeline not yet implemented")
+    run_button.setToolTip("Analysis pipeline not yet implemented (Phase 1)")
     layout.addWidget(run_button)
 
-    return panel, run_button
+    return panel, run_button, status
 
 
 def build_main_layout(window: MainWindow) -> None:
@@ -131,10 +211,11 @@ def build_main_layout(window: MainWindow) -> None:
     center_layout.addWidget(canvas_host, stretch=1)
     window.image_canvas = image_canvas
 
-    controls_panel, run_button = build_workbench_controls(center_column)
+    controls_panel, run_button, controls_status = build_workbench_controls(center_column)
     center_layout.addWidget(controls_panel)
     window.controls_panel = controls_panel
     window.run_analysis_button = run_button
+    window.controls_status_label = controls_status
 
     inspector_panel = build_inspector_panel(horizontal_splitter)
     window.inspector_panel = inspector_panel
