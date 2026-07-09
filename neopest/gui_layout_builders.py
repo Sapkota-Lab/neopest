@@ -57,7 +57,7 @@ class SampleInspectorPanel(QWidget):
         apply_section_title_style(title)
         layout.addWidget(title)
 
-        subtitle = QLabel("Sample details and calibration")
+        subtitle = QLabel("Sample details, calibration, and preview")
         apply_hint_style(subtitle)
         layout.addWidget(subtitle)
         layout.addWidget(make_vertical_divider())
@@ -71,6 +71,9 @@ class SampleInspectorPanel(QWidget):
             ("original_source_path", "Original Source"),
             ("dimensions", "Dimensions"),
             ("image_hash", "Image Hash"),
+            ("leaf_mask", "Leaf Mask"),
+            ("leaf_mask_method", "Method"),
+            ("leaf_mask_warnings", "Warnings"),
             ("calibration", "Calibration"),
             ("pixels_per_mm", "pixels_per_mm"),
             ("known_distance", "Known Distance"),
@@ -91,6 +94,22 @@ class SampleInspectorPanel(QWidget):
             row.addWidget(value)
             layout.addLayout(row)
             self._value_labels[key] = value
+
+        layout.addWidget(make_vertical_divider())
+
+        preview_title = QLabel("Leaf Mask Preview")
+        apply_section_title_style(preview_title)
+        layout.addWidget(preview_title)
+
+        preview_hint = QLabel(
+            "Generate a deterministic leaf blade mask overlay for visual inspection. "
+            "Preview only — not final analysis."
+        )
+        apply_hint_style(preview_hint)
+        layout.addWidget(preview_hint)
+
+        self.preview_leaf_mask_button = QPushButton("Preview Leaf Mask")
+        layout.addWidget(self.preview_leaf_mask_button)
 
         layout.addWidget(make_vertical_divider())
 
@@ -117,7 +136,11 @@ class SampleInspectorPanel(QWidget):
 
         layout.addStretch(1)
         self.set_calibration_controls_enabled(False)
+        self.set_preview_controls_enabled(False)
         self.show_workspace_state(None)
+
+    def set_preview_controls_enabled(self, enabled: bool) -> None:
+        self.preview_leaf_mask_button.setEnabled(enabled)
 
     def set_calibration_controls_enabled(self, enabled: bool) -> None:
         self.set_manual_calibration_button.setEnabled(enabled)
@@ -139,15 +162,30 @@ class SampleInspectorPanel(QWidget):
             "original_source_path",
             "dimensions",
             "image_hash",
+            "leaf_mask_method",
+            "leaf_mask_warnings",
             "pixels_per_mm",
             "known_distance",
             "known_distance_mm",
             "calibration_points",
         ):
             self._value_labels[key].setText("—")
+        self._value_labels["leaf_mask"].setText("—")
         self._value_labels["calibration"].setText("—")
         self._value_labels["analysis"].setText("—")
         self.set_calibration_controls_enabled(False)
+        self.set_preview_controls_enabled(False)
+
+    def show_leaf_mask_preview_fields(
+        self,
+        *,
+        status: str | None = None,
+        method: str | None = None,
+        warnings: str | None = None,
+    ) -> None:
+        self._value_labels["leaf_mask"].setText(status or "Not previewed")
+        self._value_labels["leaf_mask_method"].setText(method or "—")
+        self._value_labels["leaf_mask_warnings"].setText(warnings or "—")
 
     def show_sample(self, sample: SampleRecord, workspace: WorkspaceMetadata) -> None:
         self._value_labels["sample"].setText(sample.display_name)
@@ -201,6 +239,7 @@ class SampleInspectorPanel(QWidget):
             )
 
         self.set_calibration_controls_enabled(True)
+        self.set_preview_controls_enabled(True)
         self.set_save_calibration_enabled(False)
 
 
@@ -245,7 +284,7 @@ def build_workbench_controls(parent: QWidget | None = None) -> tuple[QWidget, QP
 
     run_button = QPushButton("Run Analysis")
     run_button.setEnabled(False)
-    run_button.setToolTip("Analysis pipeline not yet implemented (Phase 2)")
+    run_button.setToolTip("Analysis pipeline not yet implemented (Phase 3)")
     layout.addWidget(run_button)
 
     return panel, run_button, status

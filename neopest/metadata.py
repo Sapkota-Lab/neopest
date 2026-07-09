@@ -143,7 +143,12 @@ class CalibrationRecord:
 
 @dataclass
 class SampleRecord:
-    """One imported still image representing a single strawberry leaf."""
+    """One imported still image representing a single leaf observation.
+
+    Each sample is one image capture (e.g. one day/timepoint). Future analysis
+    may group samples by experimental unit and timepoint for disease spread;
+    Phase 3 preview does not persist masks or disease measurements per sample.
+    """
 
     sample_id: str
     condition_group_id: str

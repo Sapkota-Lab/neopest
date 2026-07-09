@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -21,7 +21,7 @@ from neopest.calibration import (
 )
 from neopest.gui_layout_builders import build_main_layout
 from neopest.gui_styles import build_application_stylesheet
-from neopest.image_io import SUPPORTED_IMAGE_SUFFIXES
+from neopest.image_io import SUPPORTED_IMAGE_SUFFIXES, leaf_mask_to_qimage, load_image_rgb_array
 from neopest.metadata import WORKSPACE_JSON_FILENAME, SampleRecord, WorkspaceMetadata
 from neopest.project_manager import (
     WorkspaceError,
@@ -33,6 +33,31 @@ from neopest.project_manager import (
     load_workspace,
     save_sample_calibration,
 )
+from neopest.segmentation import LeafMaskPreview, LeafMaskPreviewStatus, segment_leaf_preview
+
+LEAF_MASK_PREVIEW_METHOD_LABEL = "green-seeded color thresholding"
+
+
+def _format_leaf_mask_preview_fields(
+    preview: LeafMaskPreview | None,
+) -> tuple[str | None, str | None, str | None]:
+    """Translate preview results into plain inspector strings."""
+    if preview is None:
+        return None, None, None
+
+    if preview.status is LeafMaskPreviewStatus.SUCCESS:
+        status = "Preview Ready"
+    else:
+        status = "Failed Preview"
+
+    if preview.warnings:
+        warnings = "\n".join(preview.warnings)
+    elif preview.status is LeafMaskPreviewStatus.FAILED:
+        warnings = "Leaf mask preview could not be generated."
+    else:
+        warnings = None
+
+    return status, LEAF_MASK_PREVIEW_METHOD_LABEL, warnings
 
 
 class MainWindow(QMainWindow):
@@ -45,6 +70,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(960, 640)
         self._workspace: WorkspaceMetadata | None = None
         self._selected_sample_id: str | None = None
+        self._leaf_mask_previews: dict[str, LeafMaskPreview] = {}
         build_main_layout(self)
         self._build_menus()
         self._connect_signals()
@@ -124,10 +150,14 @@ class MainWindow(QMainWindow):
         self.inspector_panel.cancel_calibration_button.clicked.connect(
             self._on_cancel_calibration
         )
+        self.inspector_panel.preview_leaf_mask_button.clicked.connect(
+            self._on_preview_leaf_mask
+        )
 
     def _set_workspace(self, workspace: WorkspaceMetadata | None) -> None:
         self._workspace = workspace
         self._selected_sample_id = None
+        self._leaf_mask_previews = {}
         self._refresh_ui()
 
     def _refresh_ui(self) -> None:
@@ -320,6 +350,7 @@ class MainWindow(QMainWindow):
     def _on_selection_cleared(self) -> None:
         self._selected_sample_id = None
         self.image_canvas.set_calibration_mode(False)
+        self.image_canvas.clear_leaf_mask_overlay()
         if self._workspace is None:
             self.inspector_panel.show_workspace_state(None)
         else:
@@ -414,7 +445,71 @@ class MainWindow(QMainWindow):
         else:
             self.image_canvas.set_saved_calibration_line(None, None)
         self.inspector_panel.show_sample(sample, self._workspace)
+        status, method, warnings = _format_leaf_mask_preview_fields(
+            self._leaf_mask_previews.get(sample.sample_id)
+        )
+        self.inspector_panel.show_leaf_mask_preview_fields(
+            status=status,
+            method=method,
+            warnings=warnings,
+        )
+        self._apply_leaf_mask_overlay(self._leaf_mask_previews.get(sample.sample_id))
         self.inspector_panel.set_save_calibration_enabled(False)
+
+    def _apply_leaf_mask_overlay(self, preview: LeafMaskPreview | None) -> None:
+        if (
+            preview is None
+            or preview.status is not LeafMaskPreviewStatus.SUCCESS
+            or preview.mask is None
+        ):
+            self.image_canvas.clear_leaf_mask_overlay()
+            return
+
+        overlay_image = leaf_mask_to_qimage(preview.mask)
+        self.image_canvas.set_leaf_mask_overlay(QPixmap.fromImage(overlay_image))
+
+    def _on_preview_leaf_mask(self) -> None:
+        if self._workspace is None or self._selected_sample_id is None:
+            QMessageBox.information(
+                self,
+                "No Sample Selected",
+                "Select a sample with a raw image before previewing a leaf mask.",
+            )
+            return
+
+        sample = self._workspace.get_sample(self._selected_sample_id)
+        if sample is None:
+            return
+
+        image_path = sample.raw_image_absolute(self._workspace.root_path)
+        try:
+            image_array = load_image_rgb_array(image_path)
+            preview = segment_leaf_preview(image_array)
+        except (OSError, ValueError) as exc:
+            preview = LeafMaskPreview(
+                mask=None,
+                status=LeafMaskPreviewStatus.FAILED,
+                warnings=[str(exc)],
+            )
+
+        self._leaf_mask_previews[sample.sample_id] = preview
+        status, method, warnings = _format_leaf_mask_preview_fields(preview)
+        self.inspector_panel.show_leaf_mask_preview_fields(
+            status=status,
+            method=method,
+            warnings=warnings,
+        )
+        self._apply_leaf_mask_overlay(preview)
+
+        if preview.status is LeafMaskPreviewStatus.SUCCESS:
+            self.controls_status_label.setText(
+                f"Leaf mask preview ready: {sample.display_name}"
+            )
+        else:
+            warning = preview.warnings[0] if preview.warnings else "Preview failed."
+            self.controls_status_label.setText(
+                f"Leaf mask preview failed: {warning}"
+            )
 
     def _show_sample(self, sample_id: str) -> None:
         if self._workspace is None:

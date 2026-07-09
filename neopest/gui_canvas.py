@@ -75,6 +75,7 @@ class ImageCanvas(QWidget):
         self._calibration_mode = False
         self._draft_points: list[tuple[float, float]] = []
         self._saved_line: tuple[tuple[float, float], tuple[float, float]] | None = None
+        self._leaf_mask_overlay: QPixmap | None = None
 
     def clear_image(self) -> None:
         self._pixmap = None
@@ -83,6 +84,7 @@ class ImageCanvas(QWidget):
         self._calibration_mode = False
         self._draft_points = []
         self._saved_line = None
+        self._leaf_mask_overlay = None
         self.update()
 
     def set_hint(self, text: str) -> None:
@@ -107,6 +109,16 @@ class ImageCanvas(QWidget):
             self._pixmap = pixmap
             self._status = image_path.name
         self._draft_points = []
+        self._leaf_mask_overlay = None
+        self.update()
+
+    def set_leaf_mask_overlay(self, overlay: QPixmap | None) -> None:
+        """Show or hide a pre-built leaf mask overlay pixmap aligned to the source image."""
+        self._leaf_mask_overlay = overlay
+        self.update()
+
+    def clear_leaf_mask_overlay(self) -> None:
+        self._leaf_mask_overlay = None
         self.update()
 
     def set_calibration_mode(self, enabled: bool) -> None:
@@ -250,6 +262,14 @@ class ImageCanvas(QWidget):
                     Qt.TransformationMode.SmoothTransformation,
                 )
                 painter.drawPixmap(self._geometry.draw_x, self._geometry.draw_y, scaled)
+                if self._leaf_mask_overlay is not None and not self._leaf_mask_overlay.isNull():
+                    mask_scaled = self._leaf_mask_overlay.scaled(
+                        self._geometry.draw_width,
+                        self._geometry.draw_height,
+                        Qt.AspectRatioMode.IgnoreAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                    painter.drawPixmap(self._geometry.draw_x, self._geometry.draw_y, mask_scaled)
                 self._draw_calibration_overlay(painter)
         else:
             self._geometry = None
