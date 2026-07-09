@@ -1,0 +1,35 @@
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Build artifacts
+/build/
+/dist/
+*.egg-info/
+
+# Local workspaces and runtime data
+/workspaces/
+/metadata/
+/raw/
+/processed/
+/exports/
+/imports/
+
+# Local image imports (not repo fixtures)
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+*.bmp
+
+# Release archives
+*.zip
