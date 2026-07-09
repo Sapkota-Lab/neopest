@@ -117,7 +117,6 @@ def build_application_stylesheet() -> str:
     """Global application stylesheet for controls and chrome."""
     return f"""
     QWidget {{
-        font-family: "Helvetica Neue", "Segoe UI", sans-serif;
         font-size: 13px;
         color: {COLOR_CONTROL_TEXT};
     }}

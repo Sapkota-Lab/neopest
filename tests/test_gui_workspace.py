@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageB
 
 from neopest.gui import MainWindow
 from neopest.metadata import WORKSPACE_JSON_FILENAME
-from neopest.project_manager import initialize_workspace
+from neopest.project_manager import WorkspaceError, initialize_workspace
 
 
 def _ensure_qt_app() -> QApplication:
@@ -23,6 +23,12 @@ def _ensure_qt_app() -> QApplication:
     if app is None:
         return QApplication(sys.argv)
     return app
+
+
+def _main_window_without_startup_default() -> MainWindow:
+    with patch("neopest.gui.ensure_default_workspace", side_effect=WorkspaceError("disabled")):
+        with patch.object(QMessageBox, "warning"):
+            return MainWindow()
 
 
 class TestGuiWorkspaceOpenNew(unittest.TestCase):
@@ -35,7 +41,7 @@ class TestGuiWorkspaceOpenNew(unittest.TestCase):
             folder = Path(tmp) / "random_folder"
             folder.mkdir()
 
-            window = MainWindow()
+            window = _main_window_without_startup_default()
             with (
                 patch.object(QFileDialog, "getExistingDirectory", return_value=str(folder)),
                 patch.object(QMessageBox, "warning"),
@@ -50,7 +56,7 @@ class TestGuiWorkspaceOpenNew(unittest.TestCase):
             root = Path(tmp) / "ws"
             created = initialize_workspace(root, display_name="GUI Open Test")
 
-            window = MainWindow()
+            window = _main_window_without_startup_default()
             with patch.object(QFileDialog, "getExistingDirectory", return_value=str(root)):
                 window._on_open_workspace()
 
@@ -61,7 +67,7 @@ class TestGuiWorkspaceOpenNew(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             default_root = Path(tmp) / "Documents" / "NeoPest"
 
-            window = MainWindow()
+            window = _main_window_without_startup_default()
             with (
                 patch(
                     "neopest.gui.get_default_workspace_root",
@@ -79,7 +85,7 @@ class TestGuiWorkspaceOpenNew(unittest.TestCase):
             default_root = Path(tmp) / "Documents" / "NeoPest"
             created = initialize_workspace(default_root, display_name="Default")
 
-            window = MainWindow()
+            window = _main_window_without_startup_default()
             with patch(
                 "neopest.gui.get_default_workspace_root",
                 return_value=default_root,
@@ -93,7 +99,7 @@ class TestGuiWorkspaceOpenNew(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             default_root = Path(tmp) / "Documents" / "NeoPest"
 
-            window = MainWindow()
+            window = _main_window_without_startup_default()
             with patch(
                 "neopest.gui.get_default_workspace_root",
                 return_value=default_root,
@@ -111,7 +117,7 @@ class TestGuiWorkspaceOpenNew(unittest.TestCase):
                 encoding="utf-8"
             )
 
-            window = MainWindow()
+            window = _main_window_without_startup_default()
             with (
                 patch(
                     "neopest.gui.get_default_workspace_root",
@@ -133,7 +139,7 @@ class TestGuiWorkspaceOpenNew(unittest.TestCase):
             initialize_workspace(root, display_name="Existing")
             original_payload = (root / WORKSPACE_JSON_FILENAME).read_text(encoding="utf-8")
 
-            window = MainWindow()
+            window = _main_window_without_startup_default()
             with (
                 patch.object(QFileDialog, "getExistingDirectory", return_value=str(root)),
                 patch.object(QInputDialog, "getText", return_value=("Replacement", True)),
@@ -146,6 +152,20 @@ class TestGuiWorkspaceOpenNew(unittest.TestCase):
                 (root / WORKSPACE_JSON_FILENAME).read_text(encoding="utf-8"),
                 original_payload,
             )
+
+    def test_startup_loads_default_workspace_when_metadata_exists(self) -> None:
+        with TemporaryDirectory() as tmp:
+            default_root = Path(tmp) / "Documents" / "NeoPest"
+            created = initialize_workspace(default_root, display_name="Startup Default")
+
+            with (
+                patch("neopest.gui.ensure_default_workspace", return_value=created),
+                patch.object(QMessageBox, "warning"),
+            ):
+                window = MainWindow()
+
+            self.assertIsNotNone(window._workspace)
+            self.assertEqual(window._workspace.workspace_id, created.workspace_id)
 
 
 if __name__ == "__main__":

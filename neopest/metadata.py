@@ -13,6 +13,12 @@ from neopest.results import AnalysisStatus, CalibrationStatus
 SCHEMA_VERSION = 1
 WORKSPACE_JSON_FILENAME = "neopest_workspace.json"
 DEFAULT_CONDITION_GROUP_NAME = "Ungrouped"
+CALIBRATION_METHOD_MANUAL = "manual"
+DISTANCE_UNIT_MM = "mm"
+DISTANCE_UNIT_CM = "cm"
+DISTANCE_UNIT_IN = "in"
+SUPPORTED_DISTANCE_UNITS = (DISTANCE_UNIT_MM, DISTANCE_UNIT_CM, DISTANCE_UNIT_IN)
+MM_PER_INCH = 25.4
 
 
 def _utc_now_iso() -> str:
@@ -70,6 +76,72 @@ class ConditionGroupRecord:
 
 
 @dataclass
+class CalibrationRecord:
+    """Manual scale calibration derived from a known distance between two image points."""
+
+    pixels_per_mm: float
+    known_distance_mm: float
+    point_1_x: float
+    point_1_y: float
+    point_2_x: float
+    point_2_y: float
+    known_distance_value: float | None = None
+    known_distance_unit: str | None = None
+    calibration_method: str = CALIBRATION_METHOD_MANUAL
+    calibrated_at: str = field(default_factory=_utc_now_iso)
+    notes: str = ""
+
+    def entered_distance_label(self) -> str:
+        if self.known_distance_value is not None and self.known_distance_unit:
+            return f"{self.known_distance_value:g} {self.known_distance_unit}"
+        return f"{self.known_distance_mm:g} mm"
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "calibration_method": self.calibration_method,
+            "pixels_per_mm": self.pixels_per_mm,
+            "known_distance_mm": self.known_distance_mm,
+            "point_1_x": self.point_1_x,
+            "point_1_y": self.point_1_y,
+            "point_2_x": self.point_2_x,
+            "point_2_y": self.point_2_y,
+            "calibrated_at": self.calibrated_at,
+            "notes": self.notes,
+        }
+        if self.known_distance_value is not None:
+            payload["known_distance_value"] = self.known_distance_value
+        if self.known_distance_unit is not None:
+            payload["known_distance_unit"] = self.known_distance_unit
+        return payload
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CalibrationRecord:
+        known_distance_mm = float(data["known_distance_mm"])
+        if "known_distance_value" in data and "known_distance_unit" in data:
+            known_distance_value = float(data["known_distance_value"])
+            known_distance_unit = str(data["known_distance_unit"])
+        else:
+            known_distance_value = known_distance_mm
+            known_distance_unit = DISTANCE_UNIT_MM
+
+        return cls(
+            calibration_method=str(
+                data.get("calibration_method", CALIBRATION_METHOD_MANUAL)
+            ),
+            pixels_per_mm=float(data["pixels_per_mm"]),
+            known_distance_mm=known_distance_mm,
+            known_distance_value=known_distance_value,
+            known_distance_unit=known_distance_unit,
+            point_1_x=float(data["point_1_x"]),
+            point_1_y=float(data["point_1_y"]),
+            point_2_x=float(data["point_2_x"]),
+            point_2_y=float(data["point_2_y"]),
+            calibrated_at=str(data.get("calibrated_at", _utc_now_iso())),
+            notes=str(data.get("notes", "")),
+        )
+
+
+@dataclass
 class SampleRecord:
     """One imported still image representing a single strawberry leaf."""
 
@@ -85,6 +157,7 @@ class SampleRecord:
     notes: str = ""
     calibration_status: CalibrationStatus = CalibrationStatus.UNCALIBRATED
     analysis_status: AnalysisStatus = AnalysisStatus.NOT_RUN
+    calibration: CalibrationRecord | None = None
 
     @classmethod
     def create(
@@ -127,6 +200,9 @@ class SampleRecord:
             "notes": self.notes,
             "calibration_status": self.calibration_status.value,
             "analysis_status": self.analysis_status.value,
+            "calibration": (
+                self.calibration.to_dict() if self.calibration is not None else None
+            ),
         }
 
     @classmethod
@@ -151,6 +227,11 @@ class SampleRecord:
             ),
             analysis_status=AnalysisStatus(
                 str(data.get("analysis_status", AnalysisStatus.NOT_RUN.value))
+            ),
+            calibration=(
+                CalibrationRecord.from_dict(data["calibration"])
+                if data.get("calibration")
+                else None
             ),
         )
 

@@ -10,6 +10,7 @@ class CalibrationStatus(str, Enum):
     """Scale calibration state for a sample."""
 
     UNCALIBRATED = "uncalibrated"
+    MANUAL = "manual"
     CALIBRATED = "calibrated"
     FAILED = "failed"
 

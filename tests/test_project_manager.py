@@ -6,6 +6,7 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication
@@ -15,6 +16,7 @@ from neopest.metadata import DEFAULT_CONDITION_GROUP_NAME, WORKSPACE_JSON_FILENA
 from neopest.project_manager import (
     WorkspaceError,
     create_condition_group,
+    ensure_default_workspace,
     get_default_workspace_root,
     import_images,
     initialize_workspace,
@@ -45,6 +47,40 @@ class TestProjectManager(unittest.TestCase):
         root = get_default_workspace_root()
         self.assertEqual(root, Path.home() / "Documents" / "NeoPest")
         self.assertTrue(str(root).endswith("Documents/NeoPest"))
+
+    def test_ensure_default_workspace_creates_when_missing(self) -> None:
+        with TemporaryDirectory() as tmp:
+            default_root = Path(tmp) / "NeoPest"
+            with patch(
+                "neopest.project_manager.get_default_workspace_root",
+                return_value=default_root,
+            ):
+                workspace = ensure_default_workspace(display_name="Test Default")
+            self.assertEqual(workspace.root_path, default_root.resolve())
+            self.assertTrue((default_root / WORKSPACE_JSON_FILENAME).is_file())
+
+    def test_ensure_default_workspace_loads_existing_metadata(self) -> None:
+        with TemporaryDirectory() as tmp:
+            default_root = Path(tmp) / "NeoPest"
+            with patch(
+                "neopest.project_manager.get_default_workspace_root",
+                return_value=default_root,
+            ):
+                created = ensure_default_workspace(display_name="Existing Default")
+                loaded = ensure_default_workspace()
+            self.assertEqual(loaded.workspace_id, created.workspace_id)
+
+    def test_ensure_default_workspace_initializes_folder_without_metadata(self) -> None:
+        with TemporaryDirectory() as tmp:
+            default_root = Path(tmp) / "NeoPest"
+            default_root.mkdir()
+            with patch(
+                "neopest.project_manager.get_default_workspace_root",
+                return_value=default_root,
+            ):
+                workspace = ensure_default_workspace()
+            self.assertTrue((default_root / WORKSPACE_JSON_FILENAME).is_file())
+            self.assertEqual(workspace.root_path, default_root.resolve())
 
     def test_initialize_workspace_creates_default_condition_group(self) -> None:
         with TemporaryDirectory() as tmp:

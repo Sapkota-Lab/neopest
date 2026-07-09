@@ -57,7 +57,7 @@ class SampleInspectorPanel(QWidget):
         apply_section_title_style(title)
         layout.addWidget(title)
 
-        subtitle = QLabel("Sample details and analysis settings")
+        subtitle = QLabel("Sample details and calibration")
         apply_hint_style(subtitle)
         layout.addWidget(subtitle)
         layout.addWidget(make_vertical_divider())
@@ -72,6 +72,10 @@ class SampleInspectorPanel(QWidget):
             ("dimensions", "Dimensions"),
             ("image_hash", "Image Hash"),
             ("calibration", "Calibration"),
+            ("pixels_per_mm", "pixels_per_mm"),
+            ("known_distance", "Known Distance"),
+            ("known_distance_mm", "Known Distance (mm)"),
+            ("calibration_points", "Calibration Points"),
             ("analysis", "Analysis"),
         ]
         for key, label_text in field_defs:
@@ -88,8 +92,40 @@ class SampleInspectorPanel(QWidget):
             layout.addLayout(row)
             self._value_labels[key] = value
 
+        layout.addWidget(make_vertical_divider())
+
+        calibration_title = QLabel("Manual Calibration")
+        apply_section_title_style(calibration_title)
+        layout.addWidget(calibration_title)
+
+        calibration_hint = QLabel(
+            "Manual calibration assumes a 1-inch ruler interval. "
+            "Click two ruler marks exactly 1 inch apart, then save."
+        )
+        apply_hint_style(calibration_hint)
+        layout.addWidget(calibration_hint)
+
+        self.set_manual_calibration_button = QPushButton("Set Manual Calibration")
+        self.save_calibration_button = QPushButton("Save 1-Inch Calibration")
+        self.cancel_calibration_button = QPushButton("Cancel Calibration")
+        for button in (
+            self.set_manual_calibration_button,
+            self.save_calibration_button,
+            self.cancel_calibration_button,
+        ):
+            layout.addWidget(button)
+
         layout.addStretch(1)
+        self.set_calibration_controls_enabled(False)
         self.show_workspace_state(None)
+
+    def set_calibration_controls_enabled(self, enabled: bool) -> None:
+        self.set_manual_calibration_button.setEnabled(enabled)
+        self.save_calibration_button.setEnabled(False)
+        self.cancel_calibration_button.setEnabled(enabled)
+
+    def set_save_calibration_enabled(self, enabled: bool) -> None:
+        self.save_calibration_button.setEnabled(enabled)
 
     def show_workspace_state(self, workspace: WorkspaceMetadata | None) -> None:
         if workspace is None:
@@ -103,10 +139,15 @@ class SampleInspectorPanel(QWidget):
             "original_source_path",
             "dimensions",
             "image_hash",
+            "pixels_per_mm",
+            "known_distance",
+            "known_distance_mm",
+            "calibration_points",
         ):
             self._value_labels[key].setText("—")
         self._value_labels["calibration"].setText("—")
         self._value_labels["analysis"].setText("—")
+        self.set_calibration_controls_enabled(False)
 
     def show_sample(self, sample: SampleRecord, workspace: WorkspaceMetadata) -> None:
         self._value_labels["sample"].setText(sample.display_name)
@@ -132,16 +173,42 @@ class SampleInspectorPanel(QWidget):
             _format_analysis_status(sample.analysis_status)
         )
 
+        if sample.calibration is not None:
+            calibration = sample.calibration
+            self._value_labels["pixels_per_mm"].setText(
+                f"{calibration.pixels_per_mm:.4f}"
+            )
+            self._value_labels["known_distance"].setText(
+                calibration.entered_distance_label()
+            )
+            self._value_labels["known_distance_mm"].setText(
+                f"{calibration.known_distance_mm:g} mm"
+            )
+            self._value_labels["calibration_points"].setText(
+                f"({calibration.point_1_x:.1f}, {calibration.point_1_y:.1f})"
+                f" → ({calibration.point_2_x:.1f}, {calibration.point_2_y:.1f})"
+            )
+        else:
+            self._value_labels["pixels_per_mm"].setText("—")
+            self._value_labels["known_distance"].setText("—")
+            self._value_labels["known_distance_mm"].setText("—")
+            self._value_labels["calibration_points"].setText("—")
+
         group = workspace.get_condition_group(sample.condition_group_id)
         if group is not None:
             self._value_labels["condition_group_id"].setText(
                 f"{group.display_name}\n({sample.condition_group_id})"
             )
 
+        self.set_calibration_controls_enabled(True)
+        self.set_save_calibration_enabled(False)
+
 
 def _format_calibration_status(status: CalibrationStatus) -> str:
     if status is CalibrationStatus.UNCALIBRATED:
         return "Uncalibrated"
+    if status is CalibrationStatus.MANUAL:
+        return "Manual"
     if status is CalibrationStatus.CALIBRATED:
         return "Calibrated"
     return "Missing"
@@ -178,7 +245,7 @@ def build_workbench_controls(parent: QWidget | None = None) -> tuple[QWidget, QP
 
     run_button = QPushButton("Run Analysis")
     run_button.setEnabled(False)
-    run_button.setToolTip("Analysis pipeline not yet implemented (Phase 1)")
+    run_button.setToolTip("Analysis pipeline not yet implemented (Phase 2)")
     layout.addWidget(run_button)
 
     return panel, run_button, status

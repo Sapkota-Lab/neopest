@@ -11,10 +11,12 @@ from neopest.image_io import compute_image_hash, is_supported_image, load_image_
 from neopest.metadata import (
     DEFAULT_CONDITION_GROUP_NAME,
     WORKSPACE_JSON_FILENAME,
+    CalibrationRecord,
     ConditionGroupRecord,
     SampleRecord,
     WorkspaceMetadata,
 )
+from neopest.results import CalibrationStatus
 
 RAW_IMAGES_DIR = "raw_images"
 ANALYSIS_DIR = "analysis"
@@ -34,6 +36,15 @@ def get_default_workspace_root() -> Path:
 def default_workspace_metadata_path() -> Path:
     """Return the expected metadata file path for the default workspace."""
     return get_default_workspace_root() / WORKSPACE_JSON_FILENAME
+
+
+def ensure_default_workspace(*, display_name: str = "NeoPest") -> WorkspaceMetadata:
+    """Create or load the app-owned default workspace at ~/Documents/NeoPest."""
+    root = get_default_workspace_root()
+    metadata_path = root / WORKSPACE_JSON_FILENAME
+    if metadata_path.is_file():
+        return load_workspace(root)
+    return initialize_workspace(root, display_name=display_name)
 
 
 def ensure_workspace_layout(root: Path) -> None:
@@ -191,3 +202,27 @@ def import_images(
     if save:
         save_workspace(workspace)
     return imported
+
+
+def save_sample_calibration(
+    workspace: WorkspaceMetadata,
+    sample_id: str,
+    calibration: CalibrationRecord,
+    *,
+    save: bool = True,
+) -> SampleRecord:
+    """Attach manual calibration metadata to a sample and persist the workspace."""
+    sample = workspace.get_sample(sample_id)
+    if sample is None:
+        raise WorkspaceError(f"Unknown sample: {sample_id}")
+
+    sample.calibration = calibration
+    sample.calibration_status = CalibrationStatus.MANUAL
+    # Phase 2: calibration save does not run analysis or write analysis outputs.
+    # Preserve the existing analysis_status rather than forcing not_run so future
+    # completed results are not silently cleared. Once analysis exists, calibration
+    # changes should mark prior results stale (TODO) instead of overwriting them.
+
+    if save:
+        save_workspace(workspace)
+    return sample
