@@ -60,6 +60,26 @@ def apply_explorer_panel_style(widget: QWidget) -> None:
     )
 
 
+def apply_sample_identity_style(label: QLabel) -> None:
+    label.setStyleSheet(
+        f"color: {COLOR_CONTROL_TEXT}; font-size: 15px; font-weight: 600;"
+    )
+
+
+def apply_area_caption_style(label: QLabel) -> None:
+    label.setStyleSheet(
+        f"color: {COLOR_MUTED_TEXT}; font-size: 11px; font-weight: 600; letter-spacing: 0.6px;"
+    )
+
+
+def apply_status_row_label_style(label: QLabel) -> None:
+    label.setStyleSheet(f"color: {COLOR_MUTED_TEXT}; font-size: 12px;")
+
+
+def apply_status_row_value_style(label: QLabel) -> None:
+    label.setStyleSheet(f"color: {COLOR_CONTROL_TEXT}; font-size: 12px;")
+
+
 def apply_workspace_preview_panel_style(widget: QWidget) -> None:
     widget.setObjectName(WORKSPACE_PREVIEW_PANEL_OBJECT_NAME)
     widget.setStyleSheet(

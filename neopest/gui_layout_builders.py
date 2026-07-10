@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QHBoxLayout,
+    QGridLayout,
     QLabel,
     QPushButton,
     QSizePolicy,
@@ -24,6 +24,7 @@ from neopest.gui_styles import (
     INSPECTOR_PANEL_MIN_WIDTH,
     LEFT_PANEL_MIN_WIDTH,
     PANEL_MARGIN,
+    apply_area_caption_style,
     apply_hint_style,
     apply_inspector_action_button,
     apply_inspector_panel_style,
@@ -31,10 +32,10 @@ from neopest.gui_styles import (
     apply_measurement_value_style,
     apply_panel_margins,
     apply_primary_action_button,
-    apply_section_title_style,
-    apply_workbench_controls_panel_style,
+    apply_sample_identity_style,
+    apply_status_row_label_style,
+    apply_status_row_value_style,
     apply_workspace_preview_panel_style,
-    make_vertical_divider,
 )
 from neopest.measurements import (
     CURRENT_LEAF_MASK_METHOD,
@@ -48,7 +49,7 @@ if TYPE_CHECKING:
     from neopest.gui import MainWindow
 
 
-def _format_calibration_status_label(status: CalibrationStatus) -> str:
+def _format_calibration_status_value(status: CalibrationStatus) -> str:
     if status is CalibrationStatus.UNCALIBRATED:
         return "Not calibrated"
     if status in {CalibrationStatus.MANUAL, CalibrationStatus.CALIBRATED}:
@@ -56,9 +57,9 @@ def _format_calibration_status_label(status: CalibrationStatus) -> str:
     return "Missing"
 
 
-def _format_leaf_mask_status_label(*, preview_status: str | None) -> str:
+def _format_leaf_mask_status_value(*, preview_status: str | None) -> str:
     if preview_status == "Preview Ready":
-        return "Preview Ready"
+        return "Ready"
     if preview_status == "Failed Preview":
         return "Failed"
     return "Not previewed"
@@ -90,9 +91,9 @@ def _format_total_leaf_area_display(
         settings_version=CURRENT_LEAF_MASK_SETTINGS_VERSION,
     ):
         if preview_status == "Preview Ready":
-            return "Recalculate by previewing mask"
+            return "Recalculate leaf mask"
         if sample.leaf_measurement is not None and sample.leaf_measurement.status == "stale":
-            return "Recalculate by previewing mask"
+            return "Recalculate leaf mask"
         return "Not calculated"
 
     measurement = sample.leaf_measurement
@@ -103,7 +104,7 @@ def _format_total_leaf_area_display(
 
 
 class SampleInspectorPanel(QWidget):
-    """Right-side inspector showing researcher-facing sample information."""
+    """Right-side result panel for the selected sample."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -111,19 +112,14 @@ class SampleInspectorPanel(QWidget):
         self.setMinimumWidth(INSPECTOR_PANEL_MIN_WIDTH)
         self.setMaximumWidth(INSPECTOR_PANEL_MAX_WIDTH)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.setAccessibleName("Sample inspector")
 
         layout = QVBoxLayout(self)
         apply_panel_margins(layout)
-
-        title = QLabel("Inspector")
-        apply_section_title_style(title)
-        layout.addWidget(title)
-
-        sample_title = QLabel("Sample")
-        apply_section_title_style(sample_title)
-        layout.addWidget(sample_title)
+        layout.setSpacing(12)
 
         self.sample_name_label = QLabel("No workspace open")
+        apply_sample_identity_style(self.sample_name_label)
         self.sample_name_label.setWordWrap(True)
         layout.addWidget(self.sample_name_label)
 
@@ -132,14 +128,10 @@ class SampleInspectorPanel(QWidget):
         self.condition_group_label.setWordWrap(True)
         layout.addWidget(self.condition_group_label)
 
-        layout.addWidget(make_vertical_divider())
+        layout.addSpacing(8)
 
-        measurement_title = QLabel("Measurement")
-        apply_section_title_style(measurement_title)
-        layout.addWidget(measurement_title)
-
-        area_caption = QLabel("Total Leaf Area")
-        apply_hint_style(area_caption)
+        area_caption = QLabel("TOTAL LEAF AREA")
+        apply_area_caption_style(area_caption)
         layout.addWidget(area_caption)
 
         self.total_leaf_area_label = QLabel("Not calculated")
@@ -147,31 +139,42 @@ class SampleInspectorPanel(QWidget):
         self.total_leaf_area_label.setWordWrap(True)
         layout.addWidget(self.total_leaf_area_label)
 
-        layout.addWidget(make_vertical_divider())
+        layout.addSpacing(8)
 
-        status_title = QLabel("Status")
-        apply_section_title_style(status_title)
-        layout.addWidget(status_title)
+        status_grid = QGridLayout()
+        status_grid.setHorizontalSpacing(12)
+        status_grid.setVerticalSpacing(6)
+        status_grid.setColumnStretch(1, 1)
 
-        self.calibration_status_label = QLabel("Calibration: —")
-        self.leaf_mask_status_label = QLabel("Whole Leaf Mask: —")
+        calibration_caption = QLabel("Calibration")
+        apply_status_row_label_style(calibration_caption)
+        self.calibration_status_value = QLabel("—")
+        apply_status_row_value_style(self.calibration_status_value)
+        self.calibration_status_value.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+
+        leaf_mask_caption = QLabel("Leaf mask")
+        apply_status_row_label_style(leaf_mask_caption)
+        self.leaf_mask_status_value = QLabel("—")
+        apply_status_row_value_style(self.leaf_mask_status_value)
+        self.leaf_mask_status_value.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+
+        status_grid.addWidget(calibration_caption, 0, 0)
+        status_grid.addWidget(self.calibration_status_value, 0, 1)
+        status_grid.addWidget(leaf_mask_caption, 1, 0)
+        status_grid.addWidget(self.leaf_mask_status_value, 1, 1)
+        layout.addLayout(status_grid)
+
         self.warnings_label = QLabel("")
         apply_hint_style(self.warnings_label)
         self.warnings_label.setWordWrap(True)
         self.warnings_label.hide()
-        for status_label in (
-            self.calibration_status_label,
-            self.leaf_mask_status_label,
-        ):
-            status_label.setWordWrap(True)
-            layout.addWidget(status_label)
         layout.addWidget(self.warnings_label)
 
-        layout.addWidget(make_vertical_divider())
-
-        actions_title = QLabel("Actions")
-        apply_section_title_style(actions_title)
-        layout.addWidget(actions_title)
+        layout.addSpacing(8)
 
         actions_container = QWidget(self)
         actions_layout = QVBoxLayout(actions_container)
@@ -182,7 +185,7 @@ class SampleInspectorPanel(QWidget):
         )
 
         self.set_manual_calibration_button = QPushButton("Set 1-Inch Calibration")
-        self.save_calibration_button = QPushButton("Save 1-Inch Calibration")
+        self.save_calibration_button = QPushButton("Save Calibration")
         self.cancel_calibration_button = QPushButton("Cancel Calibration")
         self.preview_leaf_mask_button = QPushButton("Preview Leaf Mask")
         self.run_analysis_button = QPushButton("Run Analysis")
@@ -194,16 +197,18 @@ class SampleInspectorPanel(QWidget):
         apply_inspector_action_button(self.run_analysis_button)
 
         self.run_analysis_button.setEnabled(False)
+        self.run_analysis_button.setVisible(False)
         self.run_analysis_button.setToolTip(
             "Final disease analysis is not yet available."
         )
+        self.save_calibration_button.setVisible(False)
+        self.cancel_calibration_button.setVisible(False)
 
         for button in (
             self.set_manual_calibration_button,
             self.save_calibration_button,
             self.cancel_calibration_button,
             self.preview_leaf_mask_button,
-            self.run_analysis_button,
         ):
             actions_layout.addWidget(button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
@@ -212,6 +217,7 @@ class SampleInspectorPanel(QWidget):
 
         self.set_calibration_controls_enabled(False)
         self.set_preview_controls_enabled(False)
+        self.set_calibration_in_progress(False)
         self.show_workspace_state(None)
 
     def set_preview_controls_enabled(self, enabled: bool) -> None:
@@ -219,25 +225,35 @@ class SampleInspectorPanel(QWidget):
 
     def set_calibration_controls_enabled(self, enabled: bool) -> None:
         self.set_manual_calibration_button.setEnabled(enabled)
-        self.save_calibration_button.setEnabled(False)
         self.cancel_calibration_button.setEnabled(enabled)
 
+    def set_calibration_in_progress(self, active: bool) -> None:
+        self.set_manual_calibration_button.setVisible(not active)
+        self.save_calibration_button.setVisible(active)
+        self.cancel_calibration_button.setVisible(active)
+        if active:
+            self.save_calibration_button.setEnabled(False)
+        else:
+            self.save_calibration_button.setEnabled(False)
+
     def set_save_calibration_enabled(self, enabled: bool) -> None:
-        self.save_calibration_button.setEnabled(enabled)
+        if self.save_calibration_button.isVisible():
+            self.save_calibration_button.setEnabled(enabled)
 
     def show_workspace_state(self, workspace: WorkspaceMetadata | None) -> None:
         if workspace is None:
             self.sample_name_label.setText("No workspace open")
         else:
-            self.sample_name_label.setText("No sample selected")
+            self.sample_name_label.setText("Select a sample")
         self.condition_group_label.setText("—")
         self.total_leaf_area_label.setText("Not calculated")
-        self.calibration_status_label.setText("Calibration: —")
-        self.leaf_mask_status_label.setText("Whole Leaf Mask: —")
+        self.calibration_status_value.setText("—")
+        self.leaf_mask_status_value.setText("—")
         self.warnings_label.hide()
         self.warnings_label.setText("")
         self.set_calibration_controls_enabled(False)
         self.set_preview_controls_enabled(False)
+        self.set_calibration_in_progress(False)
 
     def show_leaf_mask_preview_fields(
         self,
@@ -245,8 +261,8 @@ class SampleInspectorPanel(QWidget):
         status: str | None = None,
         warnings: str | None = None,
     ) -> None:
-        self.leaf_mask_status_label.setText(
-            f"Whole Leaf Mask: {_format_leaf_mask_status_label(preview_status=status)}"
+        self.leaf_mask_status_value.setText(
+            _format_leaf_mask_status_value(preview_status=status)
         )
         if warnings:
             self.warnings_label.setText(warnings)
@@ -270,11 +286,11 @@ class SampleInspectorPanel(QWidget):
             group.display_name if group is not None else "Ungrouped"
         )
 
-        self.calibration_status_label.setText(
-            f"Calibration: {_format_calibration_status_label(sample.calibration_status)}"
+        self.calibration_status_value.setText(
+            _format_calibration_status_value(sample.calibration_status)
         )
-        self.leaf_mask_status_label.setText(
-            f"Whole Leaf Mask: {_format_leaf_mask_status_label(preview_status=preview_status)}"
+        self.leaf_mask_status_value.setText(
+            _format_leaf_mask_status_value(preview_status=preview_status)
         )
         self.total_leaf_area_label.setText(
             _format_total_leaf_area_display(
@@ -299,23 +315,6 @@ class SampleInspectorPanel(QWidget):
 def build_inspector_panel(parent: QWidget | None = None) -> SampleInspectorPanel:
     """Right-side inspector / contextual settings panel."""
     return SampleInspectorPanel(parent)
-
-
-def build_workbench_controls(parent: QWidget | None = None) -> tuple[QWidget, QLabel]:
-    """Compact transient status strip beneath the image canvas."""
-    panel = QWidget(parent)
-    apply_workbench_controls_panel_style(panel)
-    panel.setFixedHeight(40)
-
-    layout = QHBoxLayout(panel)
-    layout.setContentsMargins(PANEL_MARGIN, 6, PANEL_MARGIN, 6)
-    layout.setSpacing(12)
-
-    status = QLabel("Ready")
-    apply_hint_style(status)
-    layout.addWidget(status, stretch=1)
-
-    return panel, status
 
 
 def build_main_layout(window: MainWindow) -> None:
@@ -344,11 +343,6 @@ def build_main_layout(window: MainWindow) -> None:
     canvas_host, image_canvas = build_image_canvas_host(center_column)
     center_layout.addWidget(canvas_host, stretch=1)
     window.image_canvas = image_canvas
-
-    controls_panel, controls_status = build_workbench_controls(center_column)
-    center_layout.addWidget(controls_panel)
-    window.controls_panel = controls_panel
-    window.controls_status_label = controls_status
 
     inspector_panel = build_inspector_panel(horizontal_splitter)
     window.inspector_panel = inspector_panel

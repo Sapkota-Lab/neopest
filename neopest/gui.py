@@ -19,6 +19,7 @@ from neopest.calibration import (
     CalibrationError,
     build_one_inch_manual_calibration_record,
 )
+from neopest.desktop_services import open_path_in_file_manager
 from neopest.gui_layout_builders import build_main_layout
 from neopest.gui_styles import build_application_stylesheet
 from neopest.image_io import SUPPORTED_IMAGE_SUFFIXES, leaf_mask_to_qimage, load_image_rgb_array
@@ -36,6 +37,11 @@ from neopest.project_manager import (
     import_images,
     initialize_workspace,
     load_workspace,
+    move_sample_to_condition_group,
+    remove_condition_group,
+    remove_sample,
+    rename_condition_group,
+    rename_sample,
     save_sample_calibration,
     save_sample_leaf_measurement,
 )
@@ -73,10 +79,19 @@ def _format_leaf_mask_preview_status(
 
 def _format_status_bar_message(
     *,
-    sample: SampleRecord | None,
+    workspace: WorkspaceMetadata | None = None,
+    sample: SampleRecord | None = None,
+    transient: str | None = None,
 ) -> str:
-    if sample is None:
+    if transient:
+        return transient
+    if workspace is None:
         return "Ready"
+    if sample is None:
+        return (
+            f"Ready | Workspace: {workspace.display_name} "
+            f"| Samples: {len(workspace.samples)}"
+        )
     calibration_text = (
         "Ready"
         if sample.calibration_status
@@ -162,8 +177,20 @@ class MainWindow(QMainWindow):
         file_menu.addAction(quit_action)
 
     def _connect_signals(self) -> None:
-        self.explorer_tree.sample_selected.connect(self._on_sample_selected)
-        self.explorer_tree.selection_cleared.connect(self._on_selection_cleared)
+        tree = self.explorer_tree
+        tree.sample_selected.connect(self._on_sample_selected)
+        tree.selection_cleared.connect(self._on_selection_cleared)
+        tree.new_condition_group_requested.connect(self._on_create_condition_group)
+        tree.import_images_requested.connect(self._on_import_images)
+        tree.import_images_into_group_requested.connect(self._on_import_images_into_group)
+        tree.open_workspace_folder_requested.connect(self._on_open_workspace_folder)
+        tree.rename_condition_group_requested.connect(self._on_rename_condition_group)
+        tree.remove_condition_group_requested.connect(self._on_remove_condition_group)
+        tree.sample_preview_requested.connect(self._on_sample_selected)
+        tree.rename_sample_requested.connect(self._on_rename_sample)
+        tree.remove_sample_requested.connect(self._on_remove_sample)
+        tree.reveal_sample_image_requested.connect(self._on_reveal_sample_image)
+        tree.sample_move_requested.connect(self._on_sample_move_requested)
         self.image_canvas.calibration_points_changed.connect(
             self._on_calibration_points_changed
         )
@@ -191,8 +218,19 @@ class MainWindow(QMainWindow):
             return None
         return self._workspace.get_sample(self._selected_sample_id)
 
-    def _update_status_bar(self, sample: SampleRecord | None = None) -> None:
-        self.status_bar.showMessage(_format_status_bar_message(sample=sample))
+    def _update_status_bar(
+        self,
+        *,
+        sample: SampleRecord | None = None,
+        transient: str | None = None,
+    ) -> None:
+        self.status_bar.showMessage(
+            _format_status_bar_message(
+                workspace=self._workspace,
+                sample=sample,
+                transient=transient,
+            )
+        )
 
     def _refresh_ui(self) -> None:
         workspace_open = self._workspace is not None
@@ -204,7 +242,6 @@ class MainWindow(QMainWindow):
             self.image_canvas.clear_image()
             self.image_canvas.set_hint("Open or create a workspace to begin")
             self.inspector_panel.show_workspace_state(None)
-            self.controls_status_label.setText("No workspace open")
             self._update_status_bar()
             self.setWindowTitle(f"NeoPest {__version__}")
             return
@@ -212,11 +249,7 @@ class MainWindow(QMainWindow):
         self.explorer_tree.refresh_workspace(self._workspace)
         self.inspector_panel.show_workspace_state(self._workspace)
         self.image_canvas.clear_image()
-        self.image_canvas.set_hint("Select a sample to preview its raw image")
-        self.controls_status_label.setText(
-            f"Workspace: {self._workspace.display_name} "
-            f"({len(self._workspace.samples)} sample(s))"
-        )
+        self.image_canvas.set_hint("Select a sample to view its image")
         self._update_status_bar()
         self.setWindowTitle(
             f"NeoPest {__version__} — {self._workspace.display_name}"
@@ -346,7 +379,7 @@ class MainWindow(QMainWindow):
 
         self._refresh_ui()
 
-    def _on_import_images(self) -> None:
+    def _on_import_images(self, condition_group_id: str | None = None) -> None:
         if self._workspace is None:
             return
 
@@ -361,7 +394,11 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            imported = import_images(self._workspace, [Path(path) for path in paths])
+            imported = import_images(
+                self._workspace,
+                [Path(path) for path in paths],
+                condition_group_id=condition_group_id,
+            )
         except WorkspaceError as exc:
             QMessageBox.critical(self, "Import Error", str(exc))
             return
@@ -372,6 +409,229 @@ class MainWindow(QMainWindow):
         if imported:
             self._selected_sample_id = imported[-1].sample_id
         self._refresh_ui()
+
+    def _on_import_images_into_group(self, condition_group_id: str) -> None:
+        self._on_import_images(condition_group_id=condition_group_id)
+
+    def _on_open_workspace_folder(self) -> None:
+        if self._workspace is None:
+            return
+        if not open_path_in_file_manager(self._workspace.root_path):
+            QMessageBox.warning(
+                self,
+                "Open Folder Failed",
+                "NeoPest could not open the workspace folder.",
+            )
+
+    def _on_rename_condition_group(self, condition_group_id: str) -> None:
+        if self._workspace is None:
+            return
+        group = self._workspace.get_condition_group(condition_group_id)
+        if group is None:
+            return
+
+        display_name, ok = QInputDialog.getText(
+            self,
+            "Rename Condition Group",
+            "Condition group name:",
+            text=group.display_name,
+        )
+        if not ok or not display_name.strip():
+            return
+
+        try:
+            rename_condition_group(
+                self._workspace,
+                condition_group_id,
+                display_name=display_name.strip(),
+            )
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "Rename Failed", str(exc))
+            return
+        except OSError as exc:
+            QMessageBox.critical(self, "Workspace Error", str(exc))
+            return
+
+        self._refresh_ui()
+
+    def _on_remove_condition_group(self, condition_group_id: str) -> None:
+        if self._workspace is None:
+            return
+        group = self._workspace.get_condition_group(condition_group_id)
+        if group is None:
+            return
+
+        sample_count = len(self._workspace.samples_for_group(condition_group_id))
+        if sample_count:
+            message = (
+                f"Remove condition group '{group.display_name}' and its "
+                f"{sample_count} sample(s) from this workspace?\n\n"
+                "Managed workspace image copies will be deleted. "
+                "Original source files outside the workspace are not deleted."
+            )
+        else:
+            message = (
+                f"Remove empty condition group '{group.display_name}' "
+                "from this workspace?"
+            )
+
+        answer = QMessageBox.question(
+            self,
+            "Remove Condition Group",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        removed_sample_ids = {
+            sample.sample_id
+            for sample in self._workspace.samples_for_group(condition_group_id)
+        }
+        if self._selected_sample_id in removed_sample_ids:
+            self._selected_sample_id = None
+
+        try:
+            remove_condition_group(self._workspace, condition_group_id)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "Remove Failed", str(exc))
+            return
+        except OSError as exc:
+            QMessageBox.critical(self, "Workspace Error", str(exc))
+            return
+
+        self._leaf_mask_previews = {
+            key: value
+            for key, value in self._leaf_mask_previews.items()
+            if key not in removed_sample_ids
+        }
+        self._refresh_ui()
+
+    def _on_rename_sample(self, sample_id: str) -> None:
+        if self._workspace is None:
+            return
+        sample = self._workspace.get_sample(sample_id)
+        if sample is None:
+            return
+
+        display_name, ok = QInputDialog.getText(
+            self,
+            "Rename Sample",
+            "Sample name:",
+            text=sample.display_name,
+        )
+        if not ok or not display_name.strip():
+            return
+
+        try:
+            rename_sample(
+                self._workspace,
+                sample_id,
+                display_name=display_name.strip(),
+            )
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "Rename Failed", str(exc))
+            return
+        except OSError as exc:
+            QMessageBox.critical(self, "Workspace Error", str(exc))
+            return
+
+        self._refresh_ui()
+        if self._selected_sample_id == sample_id:
+            self._show_sample(sample_id)
+
+    def _on_remove_sample(self, sample_id: str) -> None:
+        if self._workspace is None:
+            return
+        sample = self._workspace.get_sample(sample_id)
+        if sample is None:
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Remove Sample",
+            f"Remove sample '{sample.display_name}' from this workspace?\n\n"
+            "The managed workspace image copy will be deleted. "
+            "Original source files outside the workspace are not deleted.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        if self._selected_sample_id == sample_id:
+            self._selected_sample_id = None
+
+        try:
+            remove_sample(self._workspace, sample_id)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "Remove Failed", str(exc))
+            return
+        except OSError as exc:
+            QMessageBox.critical(self, "Workspace Error", str(exc))
+            return
+
+        self._leaf_mask_previews.pop(sample_id, None)
+        self._refresh_ui()
+
+    def _on_reveal_sample_image(self, sample_id: str) -> None:
+        if self._workspace is None:
+            return
+        sample = self._workspace.get_sample(sample_id)
+        if sample is None:
+            return
+
+        image_path = sample.raw_image_absolute(self._workspace.root_path)
+        if not open_path_in_file_manager(image_path):
+            QMessageBox.warning(
+                self,
+                "Reveal Image Failed",
+                "NeoPest could not reveal the managed workspace image file.",
+            )
+
+    def _on_sample_move_requested(
+        self,
+        sample_id: str,
+        destination_condition_group_id: str,
+    ) -> None:
+        if self._workspace is None:
+            return
+
+        sample = self._workspace.get_sample(sample_id)
+        destination_group = self._workspace.get_condition_group(
+            destination_condition_group_id
+        )
+        if sample is None or destination_group is None:
+            return
+
+        if sample.condition_group_id == destination_condition_group_id:
+            return
+
+        try:
+            updated = move_sample_to_condition_group(
+                self._workspace,
+                sample_id,
+                destination_condition_group_id,
+            )
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "Move Sample Failed", str(exc))
+            return
+        except OSError as exc:
+            QMessageBox.critical(self, "Move Sample Failed", str(exc))
+            return
+
+        self._selected_sample_id = sample_id
+        self.explorer_tree.refresh_workspace(self._workspace)
+        self.explorer_tree.expand_condition_group(destination_condition_group_id)
+        self.explorer_tree.select_sample(sample_id)
+        self._show_sample(sample_id)
+        self._update_status_bar(
+            sample=updated,
+            transient=(
+                f"Moved {updated.display_name} to {destination_group.display_name}"
+            ),
+        )
 
     def _on_sample_selected(self, sample_id: str) -> None:
         self._selected_sample_id = sample_id
@@ -387,7 +647,7 @@ class MainWindow(QMainWindow):
             self.inspector_panel.show_workspace_state(self._workspace)
         self.image_canvas.clear_image()
         if self._workspace is not None:
-            self.image_canvas.set_hint("Select a sample to preview its raw image")
+            self.image_canvas.set_hint("Select a sample to view its image")
         self._update_status_bar()
 
     def _on_set_manual_calibration(self) -> None:
@@ -400,9 +660,10 @@ class MainWindow(QMainWindow):
             return
 
         self.image_canvas.set_calibration_mode(True)
+        self.inspector_panel.set_calibration_in_progress(True)
         self.inspector_panel.set_save_calibration_enabled(False)
-        self.controls_status_label.setText(
-            "Manual calibration: click two ruler marks exactly 1 inch apart"
+        self._update_status_bar(
+            transient="Manual calibration: click two ruler marks exactly 1 inch apart"
         )
 
     def _on_calibration_points_changed(self) -> None:
@@ -448,19 +709,22 @@ class MainWindow(QMainWindow):
             return
 
         self.image_canvas.set_calibration_mode(False)
+        self.inspector_panel.set_calibration_in_progress(False)
         self._apply_sample_calibration_display(sample)
-        self.controls_status_label.setText("1-inch calibration saved")
+        self._update_status_bar(sample=sample, transient="1-inch calibration saved")
 
     def _on_cancel_calibration(self) -> None:
         self.image_canvas.set_calibration_mode(False)
         self.image_canvas.clear_draft_calibration()
+        self.inspector_panel.set_calibration_in_progress(False)
         if self._workspace is not None and self._selected_sample_id is not None:
             sample = self._workspace.get_sample(self._selected_sample_id)
             if sample is not None:
                 self._apply_sample_calibration_display(sample)
+                self._update_status_bar(sample=sample, transient="Calibration cancelled")
                 return
         self.inspector_panel.set_save_calibration_enabled(False)
-        self.controls_status_label.setText("Calibration cancelled")
+        self._update_status_bar(transient="Calibration cancelled")
 
     def _apply_sample_calibration_display(self, sample: SampleRecord) -> None:
         if self._workspace is None:
@@ -488,7 +752,7 @@ class MainWindow(QMainWindow):
         )
         self._apply_leaf_mask_overlay(preview)
         self.inspector_panel.set_save_calibration_enabled(False)
-        self._update_status_bar(sample)
+        self._update_status_bar(sample=sample)
 
     def _apply_leaf_mask_overlay(self, preview: LeafMaskPreview | None) -> None:
         if (
@@ -566,13 +830,15 @@ class MainWindow(QMainWindow):
                 sample = self._persist_leaf_area_from_preview(sample, preview)
             else:
                 preview_succeeded_without_calibration = True
-            self.controls_status_label.setText(
-                f"Whole Leaf Mask Preview ready: {sample.display_name}"
+            self._update_status_bar(
+                sample=sample,
+                transient=f"Whole Leaf Mask Preview ready: {sample.display_name}",
             )
         else:
             warning = preview.warnings[0] if preview.warnings else "Preview failed."
-            self.controls_status_label.setText(
-                f"Whole Leaf Mask Preview failed: {warning}"
+            self._update_status_bar(
+                sample=sample,
+                transient=f"Whole Leaf Mask Preview failed: {warning}",
             )
 
         self.inspector_panel.show_sample(
@@ -587,7 +853,7 @@ class MainWindow(QMainWindow):
             warnings=warnings,
         )
         self._apply_leaf_mask_overlay(preview)
-        self._update_status_bar(sample)
+        self._update_status_bar(sample=sample)
 
     def _show_sample(self, sample_id: str) -> None:
         if self._workspace is None:
@@ -602,7 +868,8 @@ class MainWindow(QMainWindow):
         self.image_canvas.set_image_path(image_path)
         self._apply_sample_calibration_display(sample)
         self.image_canvas.set_calibration_mode(False)
-        self.controls_status_label.setText(f"Previewing: {sample.display_name}")
+        self.inspector_panel.set_calibration_in_progress(False)
+        self._update_status_bar(sample=sample)
 
 
 def run_app(argv: list[str] | None = None) -> int:

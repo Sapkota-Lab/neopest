@@ -236,6 +236,203 @@ def save_sample_leaf_measurement(
     return sample
 
 
+def rename_condition_group(
+    workspace: WorkspaceMetadata,
+    condition_group_id: str,
+    *,
+    display_name: str,
+    save: bool = True,
+) -> ConditionGroupRecord:
+    """Rename a condition group's display name."""
+    group = workspace.get_condition_group(condition_group_id)
+    if group is None:
+        raise WorkspaceError(f"Unknown condition group: {condition_group_id}")
+
+    cleaned = display_name.strip()
+    if not cleaned:
+        raise WorkspaceError("Condition group name cannot be empty.")
+
+    group.display_name = cleaned
+    if save:
+        save_workspace(workspace)
+    return group
+
+
+def rename_sample(
+    workspace: WorkspaceMetadata,
+    sample_id: str,
+    *,
+    display_name: str,
+    save: bool = True,
+) -> SampleRecord:
+    """Rename a sample's display name."""
+    sample = workspace.get_sample(sample_id)
+    if sample is None:
+        raise WorkspaceError(f"Unknown sample: {sample_id}")
+
+    cleaned = display_name.strip()
+    if not cleaned:
+        raise WorkspaceError("Sample name cannot be empty.")
+
+    sample.display_name = cleaned
+    if save:
+        save_workspace(workspace)
+    return sample
+
+
+def _managed_workspace_file(path: Path, workspace_root: Path) -> bool:
+    """Return True when ``path`` is inside the workspace root."""
+    try:
+        path.resolve().relative_to(workspace_root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def remove_sample(
+    workspace: WorkspaceMetadata,
+    sample_id: str,
+    *,
+    save: bool = True,
+) -> SampleRecord:
+    """Remove a sample and delete its managed workspace raw image copy only."""
+    sample = workspace.get_sample(sample_id)
+    if sample is None:
+        raise WorkspaceError(f"Unknown sample: {sample_id}")
+
+    raw_path = sample.raw_image_absolute(workspace.root_path)
+    if raw_path.is_file() and _managed_workspace_file(raw_path, workspace.root_path):
+        raw_path.unlink()
+
+    workspace.samples = [
+        item for item in workspace.samples if item.sample_id != sample_id
+    ]
+    if save:
+        save_workspace(workspace)
+    return sample
+
+
+def remove_condition_group(
+    workspace: WorkspaceMetadata,
+    condition_group_id: str,
+    *,
+    save: bool = True,
+) -> None:
+    """Remove a condition group and its managed samples/files within the workspace."""
+    group = workspace.get_condition_group(condition_group_id)
+    if group is None:
+        raise WorkspaceError(f"Unknown condition group: {condition_group_id}")
+
+    for sample in list(workspace.samples_for_group(condition_group_id)):
+        remove_sample(workspace, sample.sample_id, save=False)
+
+    workspace.condition_groups = [
+        item
+        for item in workspace.condition_groups
+        if item.condition_group_id != condition_group_id
+    ]
+
+    group_dir = workspace.root_path / RAW_IMAGES_DIR / condition_group_id
+    if group_dir.is_dir() and _managed_workspace_file(group_dir, workspace.root_path):
+        shutil.rmtree(group_dir)
+
+    if save:
+        save_workspace(workspace)
+
+
+def _resolve_unique_managed_filename(directory: Path, filename: str) -> str:
+    """Return a managed filename that does not collide with an existing file."""
+    candidate = Path(filename)
+    if not (directory / candidate.name).is_file():
+        return candidate.name
+
+    stem = candidate.stem
+    suffix = candidate.suffix
+    counter = 2
+    while True:
+        unique_name = f"{stem}_{counter}{suffix}"
+        if not (directory / unique_name).is_file():
+            return unique_name
+        counter += 1
+
+
+def move_sample_to_condition_group(
+    workspace: WorkspaceMetadata,
+    sample_id: str,
+    destination_condition_group_id: str,
+    *,
+    save: bool = True,
+) -> SampleRecord:
+    """Move a sample and its managed raw image to another condition group."""
+    sample = workspace.get_sample(sample_id)
+    if sample is None:
+        raise WorkspaceError(f"Unknown sample: {sample_id}")
+
+    destination_group = workspace.get_condition_group(destination_condition_group_id)
+    if destination_group is None:
+        raise WorkspaceError(f"Unknown condition group: {destination_condition_group_id}")
+
+    if sample.condition_group_id == destination_condition_group_id:
+        return sample
+
+    source_path = sample.raw_image_absolute(workspace.root_path)
+    if not source_path.is_file():
+        raise WorkspaceError(f"Managed workspace image not found: {source_path}")
+    if not _managed_workspace_file(source_path, workspace.root_path):
+        raise WorkspaceError(
+            "Sample image path is outside the active workspace and cannot be moved."
+        )
+
+    destination_dir = workspace.root_path / RAW_IMAGES_DIR / destination_condition_group_id
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    if not _managed_workspace_file(destination_dir, workspace.root_path):
+        raise WorkspaceError(
+            "Destination condition group path is outside the active workspace."
+        )
+
+    managed_filename = _resolve_unique_managed_filename(
+        destination_dir,
+        source_path.name,
+    )
+    destination_path = destination_dir / managed_filename
+
+    previous_group_id = sample.condition_group_id
+    previous_relative_path = sample.raw_image_path
+
+    try:
+        shutil.move(str(source_path), str(destination_path))
+    except OSError as exc:
+        raise WorkspaceError(
+            f"Could not move managed workspace image for sample '{sample.display_name}'."
+        ) from exc
+
+    sample.condition_group_id = destination_condition_group_id
+    sample.raw_image_path = _workspace_relative_path(workspace.root_path, destination_path)
+
+    if not save:
+        return sample
+
+    try:
+        save_workspace(workspace)
+    except OSError as exc:
+        try:
+            shutil.move(str(destination_path), str(source_path))
+        except OSError as rollback_exc:
+            raise WorkspaceError(
+                "Workspace metadata could not be saved after moving the sample image, "
+                "and NeoPest could not restore the original managed file location. "
+                "The workspace may be inconsistent; inspect the workspace folder before retrying."
+            ) from rollback_exc
+
+        sample.condition_group_id = previous_group_id
+        sample.raw_image_path = previous_relative_path
+        raise WorkspaceError(
+            f"Could not save workspace metadata after moving sample '{sample.display_name}'."
+        ) from exc
+
+    return sample
+
+
 def save_sample_calibration(
     workspace: WorkspaceMetadata,
     sample_id: str,

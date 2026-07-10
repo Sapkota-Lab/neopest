@@ -332,6 +332,7 @@ class TestGuiSegmentationSeparation(unittest.TestCase):
 
         source = inspect.getsource(layout_builders.SampleInspectorPanel.__init__)
         self.assertIn("setEnabled(False)", source)
+        self.assertIn("setVisible(False)", source)
 
 
 if __name__ == "__main__":

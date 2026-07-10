@@ -69,7 +69,6 @@ class ImageCanvas(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMouseTracking(True)
         self._hint = "Import a leaf image to preview"
-        self._status = "No sample selected"
         self._pixmap: QPixmap | None = None
         self._geometry: ImageDrawGeometry | None = None
         self._calibration_mode = False
@@ -80,7 +79,6 @@ class ImageCanvas(QWidget):
     def clear_image(self) -> None:
         self._pixmap = None
         self._geometry = None
-        self._status = "No sample selected"
         self._calibration_mode = False
         self._draft_points = []
         self._saved_line = None
@@ -89,10 +87,6 @@ class ImageCanvas(QWidget):
 
     def set_hint(self, text: str) -> None:
         self._hint = text
-        self.update()
-
-    def set_status(self, text: str) -> None:
-        self._status = text
         self.update()
 
     def set_image_path(self, image_path: Path | None) -> None:
@@ -104,10 +98,9 @@ class ImageCanvas(QWidget):
         if pixmap.isNull():
             self._pixmap = None
             self._geometry = None
-            self._status = "Unable to load image"
+            self._hint = "Unable to load image"
         else:
             self._pixmap = pixmap
-            self._status = image_path.name
         self._draft_points = []
         self._leaf_mask_overlay = None
         self.update()
@@ -279,7 +272,7 @@ class ImageCanvas(QWidget):
             painter.drawText(
                 preview_rect,
                 Qt.AlignmentFlag.AlignCenter,
-                f"{self._hint}\n\n{self._status}",
+                self._hint,
             )
 
         painter.end()

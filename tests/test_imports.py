@@ -16,6 +16,7 @@ class TestImports(unittest.TestCase):
             "neopest.analysis",
             "neopest.app",
             "neopest.calibration",
+            "neopest.desktop_services",
             "neopest.export",
             "neopest.explorer_tree",
             "neopest.gui",

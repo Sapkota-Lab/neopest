@@ -90,8 +90,8 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             self.assertEqual(preview.status.value, "success")
             self.assertIsNotNone(window.image_canvas._leaf_mask_overlay)
             self.assertIn(
-                "Preview Ready",
-                window.inspector_panel.leaf_mask_status_label.text(),
+                "Ready",
+                window.inspector_panel.leaf_mask_status_value.text(),
             )
 
     def test_preview_does_not_change_sample_analysis_status(self) -> None:
@@ -135,7 +135,7 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             self.assertEqual(sample.analysis_status.value, "not_run")
             self.assertIn(
                 "Failed",
-                window.inspector_panel.leaf_mask_status_label.text(),
+                window.inspector_panel.leaf_mask_status_value.text(),
             )
 
     def test_switching_samples_clears_stale_overlay(self) -> None:
@@ -165,7 +165,7 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             self.assertIsNone(window.image_canvas._leaf_mask_overlay)
             self.assertIn(
                 "Not previewed",
-                window.inspector_panel.leaf_mask_status_label.text(),
+                window.inspector_panel.leaf_mask_status_value.text(),
             )
 
     def test_workspace_switch_clears_preview_cache(self) -> None:
@@ -250,9 +250,10 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
         self.assertNotIn("calculate_leaf_area", source)
         self.assertNotIn("pixels_per_inch", source)
 
-    def test_run_analysis_button_stays_disabled(self) -> None:
+    def test_run_analysis_button_stays_disabled_and_hidden(self) -> None:
         window = _main_window_without_startup_default()
         self.assertFalse(window.run_analysis_button.isEnabled())
+        self.assertFalse(window.run_analysis_button.isVisible())
 
 
 if __name__ == "__main__":

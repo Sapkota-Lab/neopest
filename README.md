@@ -4,10 +4,13 @@ NeoPest is a desktop application for measuring total whole-leaf area from still 
 
 ## Current workflow
 
-1. Open or create a workspace and import a still leaf image.
-2. Select the sample and set **1-inch calibration** on the ruler.
-3. Click **Preview Leaf Mask** to generate the whole-leaf mask overlay.
-4. View **Total Leaf Area** in square inches (in²) in the Inspector.
+1. Open or create a workspace.
+2. Right-click empty Explorer space to create a condition group, or use **File → New Condition Group**.
+3. Right-click a condition group to import still leaf images.
+4. Drag samples between condition groups to reorganize them.
+5. Select a sample and set **1-inch calibration** on the ruler.
+6. Click **Preview Leaf Mask** to generate the whole-leaf mask overlay.
+7. View **Total Leaf Area** in square inches (in²) in the Inspector.
 
 ## macOS
 

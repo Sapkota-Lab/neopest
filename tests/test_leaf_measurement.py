@@ -292,7 +292,7 @@ class TestAutomaticLeafAreaGui(unittest.TestCase):
             self.assertNotIn("in²", window.inspector_panel.total_leaf_area_label.text())
             self.assertIn(
                 window.inspector_panel.total_leaf_area_label.text(),
-                {"Recalculate by previewing mask", "Not calculated"},
+                {"Recalculate leaf mask", "Not calculated"},
             )
         finally:
             tmp.cleanup()
@@ -325,8 +325,8 @@ class TestInspectorUiCleanup(unittest.TestCase):
                     panel.sample_name_label.text(),
                     panel.condition_group_label.text(),
                     panel.total_leaf_area_label.text(),
-                    panel.calibration_status_label.text(),
-                    panel.leaf_mask_status_label.text(),
+                    panel.calibration_status_value.text(),
+                    panel.leaf_mask_status_value.text(),
                 ]
             )
             self.assertNotIn(sample.sample_id, visible_text)
@@ -334,9 +334,10 @@ class TestInspectorUiCleanup(unittest.TestCase):
             self.assertNotIn(sample.raw_image_path, visible_text)
             self.assertNotIn(sample.image_hash or "", visible_text)
 
-    def test_run_analysis_stays_disabled_in_inspector(self) -> None:
+    def test_run_analysis_stays_disabled_and_hidden_in_inspector(self) -> None:
         window = _main_window_without_startup_default()
         self.assertFalse(window.run_analysis_button.isEnabled())
+        self.assertFalse(window.run_analysis_button.isVisible())
 
     def test_status_bar_uses_neutral_styling(self) -> None:
         from neopest.gui_styles import COLOR_STATUS_BAR_BACKGROUND, build_application_stylesheet
