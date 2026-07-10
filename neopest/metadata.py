@@ -142,6 +142,79 @@ class CalibrationRecord:
 
 
 @dataclass
+class LeafMeasurementRecord:
+    """Persisted whole-leaf area measurement and reproducibility provenance."""
+
+    status: str
+    leaf_area_pixels: int | None = None
+    leaf_area_in2: float | None = None
+    leaf_area_mm2: float | None = None
+    pixels_per_mm_used: float | None = None
+    pixels_per_inch_used: float | None = None
+    leaf_mask_method: str | None = None
+    leaf_mask_settings_version: int | None = None
+    calculated_at: str | None = None
+    source_image_hash: str | None = None
+    stale_reason: str | None = None
+
+    def mark_stale(self, reason: str) -> LeafMeasurementRecord:
+        """Return a copy marked stale while preserving prior numeric values."""
+        return LeafMeasurementRecord(
+            status="stale",
+            leaf_area_pixels=self.leaf_area_pixels,
+            leaf_area_in2=self.leaf_area_in2,
+            leaf_area_mm2=self.leaf_area_mm2,
+            pixels_per_mm_used=self.pixels_per_mm_used,
+            pixels_per_inch_used=self.pixels_per_inch_used,
+            leaf_mask_method=self.leaf_mask_method,
+            leaf_mask_settings_version=self.leaf_mask_settings_version,
+            calculated_at=self.calculated_at,
+            source_image_hash=self.source_image_hash,
+            stale_reason=reason,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"status": self.status}
+        if self.leaf_area_pixels is not None:
+            payload["leaf_area_pixels"] = self.leaf_area_pixels
+        if self.leaf_area_in2 is not None:
+            payload["leaf_area_in2"] = self.leaf_area_in2
+        if self.leaf_area_mm2 is not None:
+            payload["leaf_area_mm2"] = self.leaf_area_mm2
+        if self.pixels_per_mm_used is not None:
+            payload["pixels_per_mm_used"] = self.pixels_per_mm_used
+        if self.pixels_per_inch_used is not None:
+            payload["pixels_per_inch_used"] = self.pixels_per_inch_used
+        if self.leaf_mask_method is not None:
+            payload["leaf_mask_method"] = self.leaf_mask_method
+        if self.leaf_mask_settings_version is not None:
+            payload["leaf_mask_settings_version"] = self.leaf_mask_settings_version
+        if self.calculated_at is not None:
+            payload["calculated_at"] = self.calculated_at
+        if self.source_image_hash is not None:
+            payload["source_image_hash"] = self.source_image_hash
+        if self.stale_reason is not None:
+            payload["stale_reason"] = self.stale_reason
+        return payload
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LeafMeasurementRecord:
+        return cls(
+            status=str(data["status"]),
+            leaf_area_pixels=data.get("leaf_area_pixels"),
+            leaf_area_in2=data.get("leaf_area_in2"),
+            leaf_area_mm2=data.get("leaf_area_mm2"),
+            pixels_per_mm_used=data.get("pixels_per_mm_used"),
+            pixels_per_inch_used=data.get("pixels_per_inch_used"),
+            leaf_mask_method=data.get("leaf_mask_method"),
+            leaf_mask_settings_version=data.get("leaf_mask_settings_version"),
+            calculated_at=data.get("calculated_at"),
+            source_image_hash=data.get("source_image_hash"),
+            stale_reason=data.get("stale_reason"),
+        )
+
+
+@dataclass
 class SampleRecord:
     """One imported still image representing a single leaf observation.
 
@@ -163,6 +236,7 @@ class SampleRecord:
     calibration_status: CalibrationStatus = CalibrationStatus.UNCALIBRATED
     analysis_status: AnalysisStatus = AnalysisStatus.NOT_RUN
     calibration: CalibrationRecord | None = None
+    leaf_measurement: LeafMeasurementRecord | None = None
 
     @classmethod
     def create(
@@ -208,6 +282,11 @@ class SampleRecord:
             "calibration": (
                 self.calibration.to_dict() if self.calibration is not None else None
             ),
+            "leaf_measurement": (
+                self.leaf_measurement.to_dict()
+                if self.leaf_measurement is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -236,6 +315,11 @@ class SampleRecord:
             calibration=(
                 CalibrationRecord.from_dict(data["calibration"])
                 if data.get("calibration")
+                else None
+            ),
+            leaf_measurement=(
+                LeafMeasurementRecord.from_dict(data["leaf_measurement"])
+                if data.get("leaf_measurement")
                 else None
             ),
         )

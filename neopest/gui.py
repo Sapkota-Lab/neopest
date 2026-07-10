@@ -22,6 +22,11 @@ from neopest.calibration import (
 from neopest.gui_layout_builders import build_main_layout
 from neopest.gui_styles import build_application_stylesheet
 from neopest.image_io import SUPPORTED_IMAGE_SUFFIXES, leaf_mask_to_qimage, load_image_rgb_array
+from neopest.measurements import (
+    MeasurementError,
+    build_leaf_measurement_record,
+    calculate_leaf_area,
+)
 from neopest.metadata import WORKSPACE_JSON_FILENAME, SampleRecord, WorkspaceMetadata
 from neopest.project_manager import (
     WorkspaceError,
@@ -32,18 +37,24 @@ from neopest.project_manager import (
     initialize_workspace,
     load_workspace,
     save_sample_calibration,
+    save_sample_leaf_measurement,
 )
-from neopest.segmentation import LeafMaskPreview, LeafMaskPreviewStatus, segment_leaf_preview
+from neopest.results import CalibrationStatus
+from neopest.segmentation import (
+    LeafMaskPreview,
+    LeafMaskPreviewStatus,
+    PREVIEW_METHOD,
+    SETTINGS_VERSION,
+    segment_leaf_preview,
+)
 
-LEAF_MASK_PREVIEW_METHOD_LABEL = "green-seeded color thresholding"
 
-
-def _format_leaf_mask_preview_fields(
+def _format_leaf_mask_preview_status(
     preview: LeafMaskPreview | None,
-) -> tuple[str | None, str | None, str | None]:
+) -> tuple[str | None, str | None]:
     """Translate preview results into plain inspector strings."""
     if preview is None:
-        return None, None, None
+        return None, None
 
     if preview.status is LeafMaskPreviewStatus.SUCCESS:
         status = "Preview Ready"
@@ -57,7 +68,22 @@ def _format_leaf_mask_preview_fields(
     else:
         warnings = None
 
-    return status, LEAF_MASK_PREVIEW_METHOD_LABEL, warnings
+    return status, warnings
+
+
+def _format_status_bar_message(
+    *,
+    sample: SampleRecord | None,
+) -> str:
+    if sample is None:
+        return "Ready"
+    calibration_text = (
+        "Ready"
+        if sample.calibration_status
+        in {CalibrationStatus.MANUAL, CalibrationStatus.CALIBRATED}
+        else "Not calibrated"
+    )
+    return f"Ready | Sample: {sample.display_name} | Calibration: {calibration_text}"
 
 
 class MainWindow(QMainWindow):
@@ -160,6 +186,14 @@ class MainWindow(QMainWindow):
         self._leaf_mask_previews = {}
         self._refresh_ui()
 
+    def _current_sample(self) -> SampleRecord | None:
+        if self._workspace is None or self._selected_sample_id is None:
+            return None
+        return self._workspace.get_sample(self._selected_sample_id)
+
+    def _update_status_bar(self, sample: SampleRecord | None = None) -> None:
+        self.status_bar.showMessage(_format_status_bar_message(sample=sample))
+
     def _refresh_ui(self) -> None:
         workspace_open = self._workspace is not None
         self._action_import_images.setEnabled(workspace_open)
@@ -171,7 +205,7 @@ class MainWindow(QMainWindow):
             self.image_canvas.set_hint("Open or create a workspace to begin")
             self.inspector_panel.show_workspace_state(None)
             self.controls_status_label.setText("No workspace open")
-            self.status_bar.showMessage("Open or create a workspace to begin")
+            self._update_status_bar()
             self.setWindowTitle(f"NeoPest {__version__}")
             return
 
@@ -183,11 +217,7 @@ class MainWindow(QMainWindow):
             f"Workspace: {self._workspace.display_name} "
             f"({len(self._workspace.samples)} sample(s))"
         )
-        self.status_bar.showMessage(
-            f"Workspace: {self._workspace.root_path} — "
-            f"{len(self._workspace.condition_groups)} condition group(s), "
-            f"{len(self._workspace.samples)} sample(s)"
-        )
+        self._update_status_bar()
         self.setWindowTitle(
             f"NeoPest {__version__} — {self._workspace.display_name}"
         )
@@ -358,6 +388,7 @@ class MainWindow(QMainWindow):
         self.image_canvas.clear_image()
         if self._workspace is not None:
             self.image_canvas.set_hint("Select a sample to preview its raw image")
+        self._update_status_bar()
 
     def _on_set_manual_calibration(self) -> None:
         if self._workspace is None or self._selected_sample_id is None:
@@ -418,9 +449,7 @@ class MainWindow(QMainWindow):
 
         self.image_canvas.set_calibration_mode(False)
         self._apply_sample_calibration_display(sample)
-        self.controls_status_label.setText(
-            f"1-inch calibration saved: {sample.calibration.pixels_per_mm:.4f} pixels/mm"
-        )
+        self.controls_status_label.setText("1-inch calibration saved")
 
     def _on_cancel_calibration(self) -> None:
         self.image_canvas.set_calibration_mode(False)
@@ -444,17 +473,22 @@ class MainWindow(QMainWindow):
             )
         else:
             self.image_canvas.set_saved_calibration_line(None, None)
-        self.inspector_panel.show_sample(sample, self._workspace)
-        status, method, warnings = _format_leaf_mask_preview_fields(
-            self._leaf_mask_previews.get(sample.sample_id)
-        )
-        self.inspector_panel.show_leaf_mask_preview_fields(
-            status=status,
-            method=method,
+
+        preview = self._leaf_mask_previews.get(sample.sample_id)
+        preview_status, warnings = _format_leaf_mask_preview_status(preview)
+        self.inspector_panel.show_sample(
+            sample,
+            self._workspace,
+            preview_status=preview_status,
             warnings=warnings,
         )
-        self._apply_leaf_mask_overlay(self._leaf_mask_previews.get(sample.sample_id))
+        self.inspector_panel.show_leaf_mask_preview_fields(
+            status=preview_status,
+            warnings=warnings,
+        )
+        self._apply_leaf_mask_overlay(preview)
         self.inspector_panel.set_save_calibration_enabled(False)
+        self._update_status_bar(sample)
 
     def _apply_leaf_mask_overlay(self, preview: LeafMaskPreview | None) -> None:
         if (
@@ -467,6 +501,37 @@ class MainWindow(QMainWindow):
 
         overlay_image = leaf_mask_to_qimage(preview.mask)
         self.image_canvas.set_leaf_mask_overlay(QPixmap.fromImage(overlay_image))
+
+    def _persist_leaf_area_from_preview(
+        self,
+        sample: SampleRecord,
+        preview: LeafMaskPreview,
+    ) -> SampleRecord:
+        """Calculate and persist whole-leaf area when preview and calibration are valid."""
+        if self._workspace is None:
+            return sample
+        if preview.mask is None or sample.calibration is None:
+            return sample
+
+        try:
+            area = calculate_leaf_area(preview.mask, sample.calibration.pixels_per_mm)
+        except MeasurementError:
+            return sample
+
+        settings_version = int(
+            preview.settings_snapshot.get("settings_version", SETTINGS_VERSION)
+        )
+        measurement = build_leaf_measurement_record(
+            area,
+            method=preview.method or PREVIEW_METHOD,
+            settings_version=settings_version,
+            source_image_hash=sample.image_hash,
+        )
+        return save_sample_leaf_measurement(
+            self._workspace,
+            sample.sample_id,
+            measurement,
+        )
 
     def _on_preview_leaf_mask(self) -> None:
         if self._workspace is None or self._selected_sample_id is None:
@@ -493,23 +558,36 @@ class MainWindow(QMainWindow):
             )
 
         self._leaf_mask_previews[sample.sample_id] = preview
-        status, method, warnings = _format_leaf_mask_preview_fields(preview)
-        self.inspector_panel.show_leaf_mask_preview_fields(
-            status=status,
-            method=method,
-            warnings=warnings,
-        )
-        self._apply_leaf_mask_overlay(preview)
+        preview_status, warnings = _format_leaf_mask_preview_status(preview)
+        preview_succeeded_without_calibration = False
 
         if preview.status is LeafMaskPreviewStatus.SUCCESS:
+            if sample.calibration is not None:
+                sample = self._persist_leaf_area_from_preview(sample, preview)
+            else:
+                preview_succeeded_without_calibration = True
             self.controls_status_label.setText(
-                f"Leaf mask preview ready: {sample.display_name}"
+                f"Whole Leaf Mask Preview ready: {sample.display_name}"
             )
         else:
             warning = preview.warnings[0] if preview.warnings else "Preview failed."
             self.controls_status_label.setText(
-                f"Leaf mask preview failed: {warning}"
+                f"Whole Leaf Mask Preview failed: {warning}"
             )
+
+        self.inspector_panel.show_sample(
+            sample,
+            self._workspace,
+            preview_status=preview_status,
+            preview_succeeded_without_calibration=preview_succeeded_without_calibration,
+            warnings=warnings,
+        )
+        self.inspector_panel.show_leaf_mask_preview_fields(
+            status=preview_status,
+            warnings=warnings,
+        )
+        self._apply_leaf_mask_overlay(preview)
+        self._update_status_bar(sample)
 
     def _show_sample(self, sample_id: str) -> None:
         if self._workspace is None:

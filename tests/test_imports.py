@@ -23,6 +23,7 @@ class TestImports(unittest.TestCase):
             "neopest.gui_layout_builders",
             "neopest.gui_styles",
             "neopest.image_io",
+            "neopest.measurements",
             "neopest.metadata",
             "neopest.project_manager",
             "neopest.results",

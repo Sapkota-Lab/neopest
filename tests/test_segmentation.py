@@ -330,7 +330,7 @@ class TestGuiSegmentationSeparation(unittest.TestCase):
     def test_run_analysis_remains_disabled_in_layout(self) -> None:
         import neopest.gui_layout_builders as layout_builders
 
-        source = inspect.getsource(layout_builders.build_workbench_controls)
+        source = inspect.getsource(layout_builders.SampleInspectorPanel.__init__)
         self.assertIn("setEnabled(False)", source)
 
 

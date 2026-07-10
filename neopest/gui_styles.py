@@ -30,9 +30,14 @@ COLOR_CONTROL_TEXT = "#cccccc"
 COLOR_CONTROL_TEXT_DISABLED = "#666666"
 COLOR_MUTED_TEXT = "#858585"
 COLOR_ACCENT = "#3a7ca5"
+COLOR_ACCENT_HOVER = "#4a8cb5"
 
-COLOR_STATUS_BAR_BACKGROUND = "#007acc"
-COLOR_STATUS_BAR_TEXT = "#ffffff"
+COLOR_STATUS_BAR_BACKGROUND = "#2a2d2e"
+COLOR_STATUS_BAR_TEXT = "#858585"
+COLOR_STATUS_BAR_BORDER = "#333333"
+
+INSPECTOR_ACTION_BUTTON_MIN_WIDTH = 200
+INSPECTOR_ACTION_BUTTON_HEIGHT = 38
 
 LEFT_PANEL_MIN_WIDTH = 220
 INSPECTOR_PANEL_MIN_WIDTH = 240
@@ -105,6 +110,22 @@ def apply_section_title_style(label: QLabel) -> None:
     )
 
 
+def apply_measurement_value_style(label: QLabel) -> None:
+    label.setStyleSheet(
+        f"color: {COLOR_CONTROL_TEXT}; font-size: 22px; font-weight: 600;"
+    )
+
+
+def apply_inspector_action_button(button) -> None:
+    button.setMinimumWidth(INSPECTOR_ACTION_BUTTON_MIN_WIDTH)
+    button.setFixedHeight(INSPECTOR_ACTION_BUTTON_HEIGHT)
+
+
+def apply_primary_action_button(button) -> None:
+    apply_inspector_action_button(button)
+    button.setObjectName("primaryActionButton")
+
+
 def make_vertical_divider() -> QFrame:
     line = QFrame()
     line.setFrameShape(QFrame.Shape.HLine)
@@ -148,9 +169,24 @@ def build_application_stylesheet() -> str:
     }}
     QPushButton:disabled {{
         color: {COLOR_CONTROL_TEXT_DISABLED};
+        background-color: {COLOR_CONTROL_BACKGROUND};
+    }}
+    QPushButton#primaryActionButton {{
+        background-color: {COLOR_ACCENT};
+        color: #ffffff;
+        border: 1px solid {COLOR_ACCENT};
+    }}
+    QPushButton#primaryActionButton:hover {{
+        background-color: {COLOR_ACCENT_HOVER};
+    }}
+    QPushButton#primaryActionButton:disabled {{
+        background-color: {COLOR_CONTROL_BACKGROUND};
+        color: {COLOR_CONTROL_TEXT_DISABLED};
+        border: 1px solid {COLOR_CONTROL_BORDER};
     }}
     QStatusBar {{
         background-color: {COLOR_STATUS_BAR_BACKGROUND};
         color: {COLOR_STATUS_BAR_TEXT};
+        border-top: 1px solid {COLOR_STATUS_BAR_BORDER};
     }}
     """

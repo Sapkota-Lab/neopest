@@ -13,6 +13,7 @@ from neopest.metadata import (
     WORKSPACE_JSON_FILENAME,
     CalibrationRecord,
     ConditionGroupRecord,
+    LeafMeasurementRecord,
     SampleRecord,
     WorkspaceMetadata,
 )
@@ -204,6 +205,37 @@ def import_images(
     return imported
 
 
+def mark_sample_leaf_measurement_stale(sample: SampleRecord, reason: str) -> None:
+    """Mark a persisted leaf measurement stale when scientific inputs change."""
+    if sample.leaf_measurement is None:
+        return
+    if sample.leaf_measurement.status == "valid":
+        sample.leaf_measurement = sample.leaf_measurement.mark_stale(reason)
+
+
+def clear_sample_leaf_measurement(sample: SampleRecord) -> None:
+    """Remove a persisted leaf measurement from a sample."""
+    sample.leaf_measurement = None
+
+
+def save_sample_leaf_measurement(
+    workspace: WorkspaceMetadata,
+    sample_id: str,
+    measurement: LeafMeasurementRecord,
+    *,
+    save: bool = True,
+) -> SampleRecord:
+    """Persist a whole-leaf area measurement for a sample."""
+    sample = workspace.get_sample(sample_id)
+    if sample is None:
+        raise WorkspaceError(f"Unknown sample: {sample_id}")
+
+    sample.leaf_measurement = measurement
+    if save:
+        save_workspace(workspace)
+    return sample
+
+
 def save_sample_calibration(
     workspace: WorkspaceMetadata,
     sample_id: str,
@@ -216,12 +248,11 @@ def save_sample_calibration(
     if sample is None:
         raise WorkspaceError(f"Unknown sample: {sample_id}")
 
+    mark_sample_leaf_measurement_stale(sample, "calibration_changed")
     sample.calibration = calibration
     sample.calibration_status = CalibrationStatus.MANUAL
-    # Phase 2: calibration save does not run analysis or write analysis outputs.
-    # Preserve the existing analysis_status rather than forcing not_run so future
-    # completed results are not silently cleared. Once analysis exists, calibration
-    # changes should mark prior results stale (TODO) instead of overwriting them.
+    # Phase 3C: calibration save does not run final analysis. Preserve analysis_status
+    # and invalidate whole-leaf area measurements tied to prior calibration.
 
     if save:
         save_workspace(workspace)

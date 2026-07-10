@@ -18,9 +18,15 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
+from neopest.calibration import build_one_inch_manual_calibration_record
 from neopest.gui import MainWindow
 from neopest.metadata import WORKSPACE_JSON_FILENAME
-from neopest.project_manager import WorkspaceError, import_images, initialize_workspace
+from neopest.project_manager import (
+    WorkspaceError,
+    import_images,
+    initialize_workspace,
+    save_sample_calibration,
+)
 from tests.test_segmentation import _make_synthetic_leaf_image
 
 
@@ -83,9 +89,9 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             preview = window._leaf_mask_previews[imported[0].sample_id]
             self.assertEqual(preview.status.value, "success")
             self.assertIsNotNone(window.image_canvas._leaf_mask_overlay)
-            self.assertEqual(
-                window.inspector_panel._value_labels["leaf_mask"].text(),
+            self.assertIn(
                 "Preview Ready",
+                window.inspector_panel.leaf_mask_status_label.text(),
             )
 
     def test_preview_does_not_change_sample_analysis_status(self) -> None:
@@ -127,9 +133,9 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             sample = workspace.get_sample(imported[0].sample_id)
             assert sample is not None
             self.assertEqual(sample.analysis_status.value, "not_run")
-            self.assertEqual(
-                window.inspector_panel._value_labels["leaf_mask"].text(),
-                "Failed Preview",
+            self.assertIn(
+                "Failed",
+                window.inspector_panel.leaf_mask_status_label.text(),
             )
 
     def test_switching_samples_clears_stale_overlay(self) -> None:
@@ -157,9 +163,9 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
 
             window._on_sample_selected(sample_b.sample_id)
             self.assertIsNone(window.image_canvas._leaf_mask_overlay)
-            self.assertEqual(
-                window.inspector_panel._value_labels["leaf_mask"].text(),
+            self.assertIn(
                 "Not previewed",
+                window.inspector_panel.leaf_mask_status_label.text(),
             )
 
     def test_workspace_switch_clears_preview_cache(self) -> None:
@@ -185,7 +191,7 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             self.assertEqual(window._leaf_mask_previews, {})
             self.assertIsNone(window.image_canvas._leaf_mask_overlay)
 
-    def test_preview_does_not_persist_workspace_metadata(self) -> None:
+    def test_uncalibrated_preview_does_not_persist_measurement(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp) / "ws"
             workspace = initialize_workspace(root, display_name="Persistence")
@@ -206,13 +212,43 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             after = json.loads(metadata_path.read_text(encoding="utf-8"))
             self.assertEqual(before, after)
             self.assertNotIn("leaf_mask", json.dumps(after))
-            self.assertNotIn("preview", json.dumps(after).lower())
+
+    def test_calibrated_preview_persists_leaf_measurement(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp) / "ws"
+            workspace = initialize_workspace(root, display_name="Persist Cal")
+            image_path = Path(tmp) / "leaf.png"
+            cv2.imwrite(
+                str(image_path),
+                cv2.cvtColor(_make_synthetic_leaf_image(), cv2.COLOR_RGB2BGR),
+            )
+            imported = import_images(workspace, [image_path])
+            calibration = build_one_inch_manual_calibration_record((0.0, 0.0), (50.0, 0.0))
+            save_sample_calibration(workspace, imported[0].sample_id, calibration)
+
+            window = _main_window_without_startup_default()
+            window._set_workspace(workspace)
+            window._on_sample_selected(imported[0].sample_id)
+            window._on_preview_leaf_mask()
+
+            payload = json.loads((root / WORKSPACE_JSON_FILENAME).read_text())
+            measurement = payload["samples"][0].get("leaf_measurement")
+            self.assertIsNotNone(measurement)
+            self.assertEqual(measurement["status"], "valid")
+            self.assertIsInstance(measurement["leaf_area_in2"], float)
 
     def test_gui_layout_builders_do_not_import_segmentation(self) -> None:
         import neopest.gui_layout_builders as layout_builders
 
         source = inspect.getsource(layout_builders)
         self.assertNotIn("segmentation", source)
+
+    def test_gui_layout_builders_do_not_perform_measurement_math(self) -> None:
+        import neopest.gui_layout_builders as layout_builders
+
+        source = inspect.getsource(layout_builders)
+        self.assertNotIn("calculate_leaf_area", source)
+        self.assertNotIn("pixels_per_inch", source)
 
     def test_run_analysis_button_stays_disabled(self) -> None:
         window = _main_window_without_startup_default()

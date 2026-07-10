@@ -25,23 +25,85 @@ from neopest.gui_styles import (
     LEFT_PANEL_MIN_WIDTH,
     PANEL_MARGIN,
     apply_hint_style,
+    apply_inspector_action_button,
     apply_inspector_panel_style,
     apply_main_splitter_style,
+    apply_measurement_value_style,
     apply_panel_margins,
+    apply_primary_action_button,
     apply_section_title_style,
     apply_workbench_controls_panel_style,
     apply_workspace_preview_panel_style,
     make_vertical_divider,
 )
+from neopest.measurements import (
+    CURRENT_LEAF_MASK_METHOD,
+    CURRENT_LEAF_MASK_SETTINGS_VERSION,
+    leaf_measurement_matches_provenance,
+)
 from neopest.metadata import SampleRecord, WorkspaceMetadata
-from neopest.results import AnalysisStatus, CalibrationStatus
+from neopest.results import CalibrationStatus
 
 if TYPE_CHECKING:
     from neopest.gui import MainWindow
 
 
+def _format_calibration_status_label(status: CalibrationStatus) -> str:
+    if status is CalibrationStatus.UNCALIBRATED:
+        return "Not calibrated"
+    if status in {CalibrationStatus.MANUAL, CalibrationStatus.CALIBRATED}:
+        return "Ready"
+    return "Missing"
+
+
+def _format_leaf_mask_status_label(*, preview_status: str | None) -> str:
+    if preview_status == "Preview Ready":
+        return "Preview Ready"
+    if preview_status == "Failed Preview":
+        return "Failed"
+    return "Not previewed"
+
+
+def _format_total_leaf_area_display(
+    sample: SampleRecord,
+    *,
+    preview_status: str | None,
+    preview_succeeded_without_calibration: bool = False,
+) -> str:
+    """Format researcher-facing total leaf area text without performing area math."""
+    if preview_succeeded_without_calibration:
+        return "Calibration required"
+
+    if sample.calibration is None:
+        measurement = sample.leaf_measurement
+        if measurement is not None and measurement.status == "stale":
+            return "Calibration required"
+        if preview_status == "Preview Ready":
+            return "Calibration required"
+        return "Not calculated"
+
+    if not leaf_measurement_matches_provenance(
+        sample.leaf_measurement,
+        calibration=sample.calibration,
+        image_hash=sample.image_hash,
+        method=CURRENT_LEAF_MASK_METHOD,
+        settings_version=CURRENT_LEAF_MASK_SETTINGS_VERSION,
+    ):
+        if preview_status == "Preview Ready":
+            return "Recalculate by previewing mask"
+        if sample.leaf_measurement is not None and sample.leaf_measurement.status == "stale":
+            return "Recalculate by previewing mask"
+        return "Not calculated"
+
+    measurement = sample.leaf_measurement
+    assert measurement is not None
+    if measurement.leaf_area_in2 is None:
+        return "Not calculated"
+    return f"{measurement.leaf_area_in2:.2f} in²"
+
+
 class SampleInspectorPanel(QWidget):
-    """Right-side inspector showing workspace or sample metadata."""
+    """Right-side inspector showing researcher-facing sample information."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -57,84 +119,97 @@ class SampleInspectorPanel(QWidget):
         apply_section_title_style(title)
         layout.addWidget(title)
 
-        subtitle = QLabel("Sample details, calibration, and preview")
-        apply_hint_style(subtitle)
-        layout.addWidget(subtitle)
-        layout.addWidget(make_vertical_divider())
+        sample_title = QLabel("Sample")
+        apply_section_title_style(sample_title)
+        layout.addWidget(sample_title)
 
-        self._value_labels: dict[str, QLabel] = {}
-        field_defs = [
-            ("sample", "Sample"),
-            ("sample_id", "Sample ID"),
-            ("condition_group_id", "Condition Group ID"),
-            ("raw_image_path", "Raw Image"),
-            ("original_source_path", "Original Source"),
-            ("dimensions", "Dimensions"),
-            ("image_hash", "Image Hash"),
-            ("leaf_mask", "Leaf Mask"),
-            ("leaf_mask_method", "Method"),
-            ("leaf_mask_warnings", "Warnings"),
-            ("calibration", "Calibration"),
-            ("pixels_per_mm", "pixels_per_mm"),
-            ("known_distance", "Known Distance"),
-            ("known_distance_mm", "Known Distance (mm)"),
-            ("calibration_points", "Calibration Points"),
-            ("analysis", "Analysis"),
-        ]
-        for key, label_text in field_defs:
-            row = QHBoxLayout()
-            row.setSpacing(CONTROL_ROW_SPACING)
-            label = QLabel(label_text)
-            apply_hint_style(label)
-            value = QLabel("—")
-            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            value.setWordWrap(True)
-            row.addWidget(label)
-            row.addStretch(1)
-            row.addWidget(value)
-            layout.addLayout(row)
-            self._value_labels[key] = value
+        self.sample_name_label = QLabel("No workspace open")
+        self.sample_name_label.setWordWrap(True)
+        layout.addWidget(self.sample_name_label)
+
+        self.condition_group_label = QLabel("—")
+        apply_hint_style(self.condition_group_label)
+        self.condition_group_label.setWordWrap(True)
+        layout.addWidget(self.condition_group_label)
 
         layout.addWidget(make_vertical_divider())
 
-        preview_title = QLabel("Leaf Mask Preview")
-        apply_section_title_style(preview_title)
-        layout.addWidget(preview_title)
+        measurement_title = QLabel("Measurement")
+        apply_section_title_style(measurement_title)
+        layout.addWidget(measurement_title)
 
-        preview_hint = QLabel(
-            "Generate a deterministic leaf blade mask overlay for visual inspection. "
-            "Preview only — not final analysis."
+        area_caption = QLabel("Total Leaf Area")
+        apply_hint_style(area_caption)
+        layout.addWidget(area_caption)
+
+        self.total_leaf_area_label = QLabel("Not calculated")
+        apply_measurement_value_style(self.total_leaf_area_label)
+        self.total_leaf_area_label.setWordWrap(True)
+        layout.addWidget(self.total_leaf_area_label)
+
+        layout.addWidget(make_vertical_divider())
+
+        status_title = QLabel("Status")
+        apply_section_title_style(status_title)
+        layout.addWidget(status_title)
+
+        self.calibration_status_label = QLabel("Calibration: —")
+        self.leaf_mask_status_label = QLabel("Whole Leaf Mask: —")
+        self.warnings_label = QLabel("")
+        apply_hint_style(self.warnings_label)
+        self.warnings_label.setWordWrap(True)
+        self.warnings_label.hide()
+        for status_label in (
+            self.calibration_status_label,
+            self.leaf_mask_status_label,
+        ):
+            status_label.setWordWrap(True)
+            layout.addWidget(status_label)
+        layout.addWidget(self.warnings_label)
+
+        layout.addWidget(make_vertical_divider())
+
+        actions_title = QLabel("Actions")
+        apply_section_title_style(actions_title)
+        layout.addWidget(actions_title)
+
+        actions_container = QWidget(self)
+        actions_layout = QVBoxLayout(actions_container)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(CONTROL_ROW_SPACING)
+        actions_layout.setAlignment(
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
         )
-        apply_hint_style(preview_hint)
-        layout.addWidget(preview_hint)
 
-        self.preview_leaf_mask_button = QPushButton("Preview Leaf Mask")
-        layout.addWidget(self.preview_leaf_mask_button)
-
-        layout.addWidget(make_vertical_divider())
-
-        calibration_title = QLabel("Manual Calibration")
-        apply_section_title_style(calibration_title)
-        layout.addWidget(calibration_title)
-
-        calibration_hint = QLabel(
-            "Manual calibration assumes a 1-inch ruler interval. "
-            "Click two ruler marks exactly 1 inch apart, then save."
-        )
-        apply_hint_style(calibration_hint)
-        layout.addWidget(calibration_hint)
-
-        self.set_manual_calibration_button = QPushButton("Set Manual Calibration")
+        self.set_manual_calibration_button = QPushButton("Set 1-Inch Calibration")
         self.save_calibration_button = QPushButton("Save 1-Inch Calibration")
         self.cancel_calibration_button = QPushButton("Cancel Calibration")
+        self.preview_leaf_mask_button = QPushButton("Preview Leaf Mask")
+        self.run_analysis_button = QPushButton("Run Analysis")
+
+        apply_inspector_action_button(self.set_manual_calibration_button)
+        apply_inspector_action_button(self.save_calibration_button)
+        apply_inspector_action_button(self.cancel_calibration_button)
+        apply_primary_action_button(self.preview_leaf_mask_button)
+        apply_inspector_action_button(self.run_analysis_button)
+
+        self.run_analysis_button.setEnabled(False)
+        self.run_analysis_button.setToolTip(
+            "Final disease analysis is not yet available."
+        )
+
         for button in (
             self.set_manual_calibration_button,
             self.save_calibration_button,
             self.cancel_calibration_button,
+            self.preview_leaf_mask_button,
+            self.run_analysis_button,
         ):
-            layout.addWidget(button)
+            actions_layout.addWidget(button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
+        layout.addWidget(actions_container)
         layout.addStretch(1)
+
         self.set_calibration_controls_enabled(False)
         self.set_preview_controls_enabled(False)
         self.show_workspace_state(None)
@@ -152,27 +227,15 @@ class SampleInspectorPanel(QWidget):
 
     def show_workspace_state(self, workspace: WorkspaceMetadata | None) -> None:
         if workspace is None:
-            self._value_labels["sample"].setText("No workspace open")
+            self.sample_name_label.setText("No workspace open")
         else:
-            self._value_labels["sample"].setText("No sample selected")
-        for key in (
-            "sample_id",
-            "condition_group_id",
-            "raw_image_path",
-            "original_source_path",
-            "dimensions",
-            "image_hash",
-            "leaf_mask_method",
-            "leaf_mask_warnings",
-            "pixels_per_mm",
-            "known_distance",
-            "known_distance_mm",
-            "calibration_points",
-        ):
-            self._value_labels[key].setText("—")
-        self._value_labels["leaf_mask"].setText("—")
-        self._value_labels["calibration"].setText("—")
-        self._value_labels["analysis"].setText("—")
+            self.sample_name_label.setText("No sample selected")
+        self.condition_group_label.setText("—")
+        self.total_leaf_area_label.setText("Not calculated")
+        self.calibration_status_label.setText("Calibration: —")
+        self.leaf_mask_status_label.setText("Whole Leaf Mask: —")
+        self.warnings_label.hide()
+        self.warnings_label.setText("")
         self.set_calibration_controls_enabled(False)
         self.set_preview_controls_enabled(False)
 
@@ -180,87 +243,57 @@ class SampleInspectorPanel(QWidget):
         self,
         *,
         status: str | None = None,
-        method: str | None = None,
         warnings: str | None = None,
     ) -> None:
-        self._value_labels["leaf_mask"].setText(status or "Not previewed")
-        self._value_labels["leaf_mask_method"].setText(method or "—")
-        self._value_labels["leaf_mask_warnings"].setText(warnings or "—")
-
-    def show_sample(self, sample: SampleRecord, workspace: WorkspaceMetadata) -> None:
-        self._value_labels["sample"].setText(sample.display_name)
-        self._value_labels["sample_id"].setText(sample.sample_id)
-        self._value_labels["condition_group_id"].setText(sample.condition_group_id)
-        self._value_labels["raw_image_path"].setText(sample.raw_image_path)
-        self._value_labels["original_source_path"].setText(
-            sample.original_source_path or "—"
+        self.leaf_mask_status_label.setText(
+            f"Whole Leaf Mask: {_format_leaf_mask_status_label(preview_status=status)}"
         )
-
-        if sample.width_px is not None and sample.height_px is not None:
-            self._value_labels["dimensions"].setText(
-                f"{sample.width_px} × {sample.height_px} px"
-            )
+        if warnings:
+            self.warnings_label.setText(warnings)
+            self.warnings_label.show()
         else:
-            self._value_labels["dimensions"].setText("—")
+            self.warnings_label.hide()
+            self.warnings_label.setText("")
 
-        self._value_labels["image_hash"].setText(sample.image_hash or "—")
-        self._value_labels["calibration"].setText(
-            _format_calibration_status(sample.calibration_status)
-        )
-        self._value_labels["analysis"].setText(
-            _format_analysis_status(sample.analysis_status)
-        )
-
-        if sample.calibration is not None:
-            calibration = sample.calibration
-            self._value_labels["pixels_per_mm"].setText(
-                f"{calibration.pixels_per_mm:.4f}"
-            )
-            self._value_labels["known_distance"].setText(
-                calibration.entered_distance_label()
-            )
-            self._value_labels["known_distance_mm"].setText(
-                f"{calibration.known_distance_mm:g} mm"
-            )
-            self._value_labels["calibration_points"].setText(
-                f"({calibration.point_1_x:.1f}, {calibration.point_1_y:.1f})"
-                f" → ({calibration.point_2_x:.1f}, {calibration.point_2_y:.1f})"
-            )
-        else:
-            self._value_labels["pixels_per_mm"].setText("—")
-            self._value_labels["known_distance"].setText("—")
-            self._value_labels["known_distance_mm"].setText("—")
-            self._value_labels["calibration_points"].setText("—")
-
+    def show_sample(
+        self,
+        sample: SampleRecord,
+        workspace: WorkspaceMetadata,
+        *,
+        preview_status: str | None = None,
+        preview_succeeded_without_calibration: bool = False,
+        warnings: str | None = None,
+    ) -> None:
+        self.sample_name_label.setText(sample.display_name)
         group = workspace.get_condition_group(sample.condition_group_id)
-        if group is not None:
-            self._value_labels["condition_group_id"].setText(
-                f"{group.display_name}\n({sample.condition_group_id})"
+        self.condition_group_label.setText(
+            group.display_name if group is not None else "Ungrouped"
+        )
+
+        self.calibration_status_label.setText(
+            f"Calibration: {_format_calibration_status_label(sample.calibration_status)}"
+        )
+        self.leaf_mask_status_label.setText(
+            f"Whole Leaf Mask: {_format_leaf_mask_status_label(preview_status=preview_status)}"
+        )
+        self.total_leaf_area_label.setText(
+            _format_total_leaf_area_display(
+                sample,
+                preview_status=preview_status,
+                preview_succeeded_without_calibration=preview_succeeded_without_calibration,
             )
+        )
+
+        if warnings:
+            self.warnings_label.setText(warnings)
+            self.warnings_label.show()
+        else:
+            self.warnings_label.hide()
+            self.warnings_label.setText("")
 
         self.set_calibration_controls_enabled(True)
         self.set_preview_controls_enabled(True)
         self.set_save_calibration_enabled(False)
-
-
-def _format_calibration_status(status: CalibrationStatus) -> str:
-    if status is CalibrationStatus.UNCALIBRATED:
-        return "Uncalibrated"
-    if status is CalibrationStatus.MANUAL:
-        return "Manual"
-    if status is CalibrationStatus.CALIBRATED:
-        return "Calibrated"
-    return "Missing"
-
-
-def _format_analysis_status(status: AnalysisStatus) -> str:
-    if status is AnalysisStatus.NOT_RUN:
-        return "Not Run"
-    if status is AnalysisStatus.COMPLETE:
-        return "Complete"
-    if status is AnalysisStatus.PENDING:
-        return "Pending"
-    return "Failed"
 
 
 def build_inspector_panel(parent: QWidget | None = None) -> SampleInspectorPanel:
@@ -268,26 +301,21 @@ def build_inspector_panel(parent: QWidget | None = None) -> SampleInspectorPanel
     return SampleInspectorPanel(parent)
 
 
-def build_workbench_controls(parent: QWidget | None = None) -> tuple[QWidget, QPushButton, QLabel]:
-    """Lower status/control strip beneath the main workspace."""
+def build_workbench_controls(parent: QWidget | None = None) -> tuple[QWidget, QLabel]:
+    """Compact transient status strip beneath the image canvas."""
     panel = QWidget(parent)
     apply_workbench_controls_panel_style(panel)
-    panel.setFixedHeight(56)
+    panel.setFixedHeight(40)
 
     layout = QHBoxLayout(panel)
-    layout.setContentsMargins(PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN)
+    layout.setContentsMargins(PANEL_MARGIN, 6, PANEL_MARGIN, 6)
     layout.setSpacing(12)
 
     status = QLabel("Ready")
     apply_hint_style(status)
     layout.addWidget(status, stretch=1)
 
-    run_button = QPushButton("Run Analysis")
-    run_button.setEnabled(False)
-    run_button.setToolTip("Analysis pipeline not yet implemented (Phase 3)")
-    layout.addWidget(run_button)
-
-    return panel, run_button, status
+    return panel, status
 
 
 def build_main_layout(window: MainWindow) -> None:
@@ -317,14 +345,14 @@ def build_main_layout(window: MainWindow) -> None:
     center_layout.addWidget(canvas_host, stretch=1)
     window.image_canvas = image_canvas
 
-    controls_panel, run_button, controls_status = build_workbench_controls(center_column)
+    controls_panel, controls_status = build_workbench_controls(center_column)
     center_layout.addWidget(controls_panel)
     window.controls_panel = controls_panel
-    window.run_analysis_button = run_button
     window.controls_status_label = controls_status
 
     inspector_panel = build_inspector_panel(horizontal_splitter)
     window.inspector_panel = inspector_panel
+    window.run_analysis_button = inspector_panel.run_analysis_button
 
     horizontal_splitter.addWidget(explorer_panel)
     horizontal_splitter.addWidget(center_column)
@@ -337,6 +365,6 @@ def build_main_layout(window: MainWindow) -> None:
     root.addWidget(horizontal_splitter, stretch=1)
 
     status_bar = QStatusBar(window)
-    status_bar.showMessage("NeoPest — strawberry leaf disease analysis workbench")
+    status_bar.showMessage("Ready")
     window.setStatusBar(status_bar)
     window.status_bar = status_bar
