@@ -326,7 +326,7 @@ class TestInspectorUiCleanup(unittest.TestCase):
                     panel.condition_group_label.text(),
                     panel.total_leaf_area_label.text(),
                     panel.calibration_status_value.text(),
-                    panel.leaf_mask_status_value.text(),
+                    panel.whole_leaf_status_value.text(),
                 ]
             )
             self.assertNotIn(sample.sample_id, visible_text)

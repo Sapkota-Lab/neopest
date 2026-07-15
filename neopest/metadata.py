@@ -336,6 +336,7 @@ class WorkspaceMetadata:
     updated_at: str = field(default_factory=_utc_now_iso)
     condition_groups: list[ConditionGroupRecord] = field(default_factory=list)
     samples: list[SampleRecord] = field(default_factory=list)
+    legacy_inherited_calibration_repairs: int = field(default=0, repr=False)
 
     @classmethod
     def create(cls, root_path: Path, *, display_name: str | None = None) -> WorkspaceMetadata:
@@ -389,7 +390,13 @@ class WorkspaceMetadata:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any], *, root_path: Path) -> WorkspaceMetadata:
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        *,
+        root_path: Path,
+        legacy_inherited_calibration_repairs: int = 0,
+    ) -> WorkspaceMetadata:
         resolved = root_path.expanduser().resolve()
         return cls(
             workspace_id=str(data["workspace_id"]),
@@ -402,4 +409,5 @@ class WorkspaceMetadata:
                 for item in data.get("condition_groups", [])
             ],
             samples=[SampleRecord.from_dict(item) for item in data.get("samples", [])],
+            legacy_inherited_calibration_repairs=legacy_inherited_calibration_repairs,
         )

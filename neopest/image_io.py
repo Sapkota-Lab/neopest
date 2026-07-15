@@ -13,6 +13,8 @@ from PySide6.QtGui import QImage, QImageReader
 SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 HASH_CHUNK_SIZE = 1024 * 1024
 LEAF_MASK_OVERLAY_RGBA = (50, 220, 80, 110)
+DISEASE_MASK_OVERLAY_RGBA = (255, 95, 60, 115)
+HEALTHY_TISSUE_MASK_OVERLAY_RGBA = (55, 210, 75, 105)
 
 
 @dataclass(frozen=True)
@@ -61,14 +63,14 @@ def load_image_rgb_array(path: Path) -> np.ndarray:
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
-def leaf_mask_to_qimage(mask: np.ndarray) -> QImage:
-    """Convert a boolean leaf mask into a semi-transparent RGBA ``QImage``."""
+def mask_to_qimage(mask: np.ndarray, *, overlay_rgba: tuple[int, int, int, int]) -> QImage:
+    """Convert a boolean mask into a semi-transparent RGBA ``QImage``."""
     if mask.ndim != 2:
         raise ValueError(f"Expected 2D boolean mask; got shape {mask.shape}")
 
     height, width = mask.shape
     rgba = np.zeros((height, width, 4), dtype=np.uint8)
-    red, green, blue, alpha = LEAF_MASK_OVERLAY_RGBA
+    red, green, blue, alpha = overlay_rgba
     rgba[mask, 0] = red
     rgba[mask, 1] = green
     rgba[mask, 2] = blue
@@ -81,6 +83,21 @@ def leaf_mask_to_qimage(mask: np.ndarray) -> QImage:
         bytes_per_line,
         QImage.Format.Format_RGBA8888,
     ).copy()
+
+
+def leaf_mask_to_qimage(mask: np.ndarray) -> QImage:
+    """Convert a boolean whole-leaf mask into a semi-transparent green overlay."""
+    return mask_to_qimage(mask, overlay_rgba=LEAF_MASK_OVERLAY_RGBA)
+
+
+def disease_mask_to_qimage(mask: np.ndarray) -> QImage:
+    """Convert a boolean disease mask into a semi-transparent warm overlay."""
+    return mask_to_qimage(mask, overlay_rgba=DISEASE_MASK_OVERLAY_RGBA)
+
+
+def healthy_tissue_mask_to_qimage(mask: np.ndarray) -> QImage:
+    """Convert a boolean healthy-tissue mask into a semi-transparent green overlay."""
+    return mask_to_qimage(mask, overlay_rgba=HEALTHY_TISSUE_MASK_OVERLAY_RGBA)
 
 
 def compute_image_hash(path: Path, *, algorithm: str = "sha256") -> str:

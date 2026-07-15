@@ -50,7 +50,7 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
 
     def test_preview_button_disabled_without_sample(self) -> None:
         window = _main_window_without_startup_default()
-        self.assertFalse(window.inspector_panel.preview_leaf_mask_button.isEnabled())
+        self.assertFalse(window.inspector_panel.preview_whole_leaf_button.isEnabled())
 
     def test_preview_button_enabled_for_sample_with_image(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -66,7 +66,7 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             window._set_workspace(workspace)
             window._on_sample_selected(imported[0].sample_id)
 
-            self.assertTrue(window.inspector_panel.preview_leaf_mask_button.isEnabled())
+            self.assertTrue(window.inspector_panel.preview_whole_leaf_button.isEnabled())
 
     def test_preview_leaf_mask_updates_inspector_and_overlay(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -80,7 +80,7 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(imported[0].sample_id)
-            window._on_preview_leaf_mask()
+            window._on_preview_whole_leaf()
 
             self.assertIn(
                 imported[0].sample_id,
@@ -91,7 +91,7 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             self.assertIsNotNone(window.image_canvas._leaf_mask_overlay)
             self.assertIn(
                 "Ready",
-                window.inspector_panel.leaf_mask_status_value.text(),
+                window.inspector_panel.whole_leaf_status_value.text(),
             )
 
     def test_preview_does_not_change_sample_analysis_status(self) -> None:
@@ -108,7 +108,7 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(imported[0].sample_id)
-            window._on_preview_leaf_mask()
+            window._on_preview_whole_leaf()
 
             sample = workspace.get_sample(imported[0].sample_id)
             assert sample is not None
@@ -128,14 +128,14 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(imported[0].sample_id)
-            window._on_preview_leaf_mask()
+            window._on_preview_whole_leaf()
 
             sample = workspace.get_sample(imported[0].sample_id)
             assert sample is not None
             self.assertEqual(sample.analysis_status.value, "not_run")
             self.assertIn(
                 "Failed",
-                window.inspector_panel.leaf_mask_status_value.text(),
+                window.inspector_panel.whole_leaf_status_value.text(),
             )
 
     def test_switching_samples_clears_stale_overlay(self) -> None:
@@ -158,14 +158,14 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(sample_a.sample_id)
-            window._on_preview_leaf_mask()
+            window._on_preview_whole_leaf()
             self.assertIsNotNone(window.image_canvas._leaf_mask_overlay)
 
             window._on_sample_selected(sample_b.sample_id)
             self.assertIsNone(window.image_canvas._leaf_mask_overlay)
             self.assertIn(
                 "Not previewed",
-                window.inspector_panel.leaf_mask_status_value.text(),
+                window.inspector_panel.whole_leaf_status_value.text(),
             )
 
     def test_workspace_switch_clears_preview_cache(self) -> None:
@@ -183,7 +183,7 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace_a)
             window._on_sample_selected(imported[0].sample_id)
-            window._on_preview_leaf_mask()
+            window._on_preview_whole_leaf()
             self.assertIn(imported[0].sample_id, window._leaf_mask_previews)
 
             workspace_b = initialize_workspace(root_b, display_name="Workspace B")
@@ -207,7 +207,7 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(imported[0].sample_id)
-            window._on_preview_leaf_mask()
+            window._on_preview_whole_leaf()
 
             after = json.loads(metadata_path.read_text(encoding="utf-8"))
             self.assertEqual(before, after)
@@ -229,7 +229,7 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(imported[0].sample_id)
-            window._on_preview_leaf_mask()
+            window._on_preview_whole_leaf()
 
             payload = json.loads((root / WORKSPACE_JSON_FILENAME).read_text())
             measurement = payload["samples"][0].get("leaf_measurement")

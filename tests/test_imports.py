@@ -17,6 +17,7 @@ class TestImports(unittest.TestCase):
             "neopest.app",
             "neopest.calibration",
             "neopest.desktop_services",
+            "neopest.disease_segmentation",
             "neopest.export",
             "neopest.explorer_tree",
             "neopest.gui",
@@ -29,6 +30,7 @@ class TestImports(unittest.TestCase):
             "neopest.project_manager",
             "neopest.results",
             "neopest.segmentation",
+            "neopest.workspace_compat",
         ]
         for name in modules:
             with self.subTest(module=name):

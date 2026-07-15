@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -16,6 +17,10 @@ from neopest.metadata import (
     LeafMeasurementRecord,
     SampleRecord,
     WorkspaceMetadata,
+)
+from neopest.workspace_compat import (
+    legacy_inherited_calibration_repair_message,
+    repair_legacy_inherited_calibrations_in_workspace_data,
 )
 from neopest.results import CalibrationStatus
 
@@ -62,7 +67,18 @@ def save_workspace(workspace: WorkspaceMetadata) -> Path:
     workspace.touch()
     payload = workspace.to_dict(app_version=__version__)
     target = workspace.workspace_json_path()
-    target.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    serialized = json.dumps(payload, indent=2) + "\n"
+    temporary = target.with_name(f"{target.name}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    except OSError:
+        if temporary.exists():
+            temporary.unlink(missing_ok=True)
+        raise
     return target
 
 
@@ -76,7 +92,18 @@ def load_workspace(root: Path) -> WorkspaceMetadata:
             "Use initialize_workspace() to create a new workspace."
         )
     data = json.loads(json_path.read_text(encoding="utf-8"))
-    return WorkspaceMetadata.from_dict(data, root_path=resolved)
+    repaired_data, repair_count = repair_legacy_inherited_calibrations_in_workspace_data(
+        data
+    )
+    workspace = WorkspaceMetadata.from_dict(
+        repaired_data,
+        root_path=resolved,
+        legacy_inherited_calibration_repairs=0,
+    )
+    if repair_count > 0:
+        save_workspace(workspace)
+        workspace.legacy_inherited_calibration_repairs = repair_count
+    return workspace
 
 
 def initialize_workspace(

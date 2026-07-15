@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtGui import QAction, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -22,7 +23,13 @@ from neopest.calibration import (
 from neopest.desktop_services import open_path_in_file_manager
 from neopest.gui_layout_builders import build_main_layout
 from neopest.gui_styles import build_application_stylesheet
-from neopest.image_io import SUPPORTED_IMAGE_SUFFIXES, leaf_mask_to_qimage, load_image_rgb_array
+from neopest.image_io import (
+    SUPPORTED_IMAGE_SUFFIXES,
+    disease_mask_to_qimage,
+    healthy_tissue_mask_to_qimage,
+    leaf_mask_to_qimage,
+    load_image_rgb_array,
+)
 from neopest.measurements import (
     MeasurementError,
     build_leaf_measurement_record,
@@ -45,7 +52,13 @@ from neopest.project_manager import (
     save_sample_calibration,
     save_sample_leaf_measurement,
 )
+from neopest.workspace_compat import legacy_inherited_calibration_repair_message
 from neopest.results import CalibrationStatus
+from neopest.disease_segmentation import (
+    DiseaseMaskPreview,
+    DiseaseMaskPreviewStatus,
+    segment_disease_preview,
+)
 from neopest.segmentation import (
     LeafMaskPreview,
     LeafMaskPreviewStatus,
@@ -53,6 +66,28 @@ from neopest.segmentation import (
     SETTINGS_VERSION,
     segment_leaf_preview,
 )
+
+
+def _format_disease_mask_preview_status(
+    preview: DiseaseMaskPreview | None,
+) -> tuple[str | None, str | None]:
+    """Translate disease preview results into plain inspector strings."""
+    if preview is None:
+        return None, None
+
+    if preview.status is DiseaseMaskPreviewStatus.READY:
+        status = "Ready"
+    else:
+        status = "Failed"
+
+    if preview.warnings:
+        warnings = "\n".join(preview.warnings)
+    elif preview.status is DiseaseMaskPreviewStatus.FAILED:
+        warnings = "Candidate disease preview could not be generated."
+    else:
+        warnings = None
+
+    return status, warnings
 
 
 def _format_leaf_mask_preview_status(
@@ -112,16 +147,34 @@ class MainWindow(QMainWindow):
         self._workspace: WorkspaceMetadata | None = None
         self._selected_sample_id: str | None = None
         self._leaf_mask_previews: dict[str, LeafMaskPreview] = {}
+        self._disease_mask_previews: dict[str, DiseaseMaskPreview] = {}
+        self._preview_modes: dict[str, str] = {}
         build_main_layout(self)
         self._build_menus()
         self._connect_signals()
         self._load_default_workspace_on_startup()
         self._refresh_ui()
 
+    def _notify_legacy_inherited_calibration_repairs(
+        self,
+        workspace: WorkspaceMetadata,
+    ) -> None:
+        repair_count = workspace.legacy_inherited_calibration_repairs
+        if repair_count <= 0:
+            return
+        QMessageBox.information(
+            self,
+            "Workspace Updated",
+            legacy_inherited_calibration_repair_message(repair_count),
+        )
+        workspace.legacy_inherited_calibration_repairs = 0
+
     def _load_default_workspace_on_startup(self) -> None:
         try:
             self._workspace = ensure_default_workspace()
             self._selected_sample_id = None
+            if self._workspace is not None:
+                self._notify_legacy_inherited_calibration_repairs(self._workspace)
         except WorkspaceError as exc:
             QMessageBox.warning(
                 self,
@@ -203,14 +256,22 @@ class MainWindow(QMainWindow):
         self.inspector_panel.cancel_calibration_button.clicked.connect(
             self._on_cancel_calibration
         )
-        self.inspector_panel.preview_leaf_mask_button.clicked.connect(
-            self._on_preview_leaf_mask
+        self.inspector_panel.preview_whole_leaf_button.clicked.connect(
+            self._on_preview_whole_leaf
+        )
+        self.inspector_panel.preview_disease_mask_button.clicked.connect(
+            self._on_preview_disease_mask
+        )
+        self.inspector_panel.preview_mode_combo.currentIndexChanged.connect(
+            self._on_preview_mode_changed
         )
 
     def _set_workspace(self, workspace: WorkspaceMetadata | None) -> None:
         self._workspace = workspace
         self._selected_sample_id = None
         self._leaf_mask_previews = {}
+        self._disease_mask_previews = {}
+        self._preview_modes = {}
         self._refresh_ui()
 
     def _current_sample(self) -> SampleRecord | None:
@@ -306,6 +367,8 @@ class MainWindow(QMainWindow):
             return
 
         self._set_workspace(workspace)
+        if workspace.legacy_inherited_calibration_repairs > 0:
+            self._notify_legacy_inherited_calibration_repairs(workspace)
 
     def _on_new_default_workspace(self) -> None:
         root = get_default_workspace_root()
@@ -355,6 +418,8 @@ class MainWindow(QMainWindow):
             return
 
         self._set_workspace(workspace)
+        if workspace.legacy_inherited_calibration_repairs > 0:
+            self._notify_legacy_inherited_calibration_repairs(workspace)
 
     def _on_create_condition_group(self) -> None:
         if self._workspace is None:
@@ -506,6 +571,16 @@ class MainWindow(QMainWindow):
             for key, value in self._leaf_mask_previews.items()
             if key not in removed_sample_ids
         }
+        self._disease_mask_previews = {
+            key: value
+            for key, value in self._disease_mask_previews.items()
+            if key not in removed_sample_ids
+        }
+        self._preview_modes = {
+            key: value
+            for key, value in self._preview_modes.items()
+            if key not in removed_sample_ids
+        }
         self._refresh_ui()
 
     def _on_rename_sample(self, sample_id: str) -> None:
@@ -573,6 +648,8 @@ class MainWindow(QMainWindow):
             return
 
         self._leaf_mask_previews.pop(sample_id, None)
+        self._disease_mask_previews.pop(sample_id, None)
+        self._preview_modes.pop(sample_id, None)
         self._refresh_ui()
 
     def _on_reveal_sample_image(self, sample_id: str) -> None:
@@ -726,6 +803,89 @@ class MainWindow(QMainWindow):
         self.inspector_panel.set_save_calibration_enabled(False)
         self._update_status_bar(transient="Calibration cancelled")
 
+    def _invalidate_disease_preview(self, sample_id: str) -> None:
+        self._disease_mask_previews.pop(sample_id, None)
+        if self._preview_modes.get(sample_id) in {"disease", "healthy_tissue"}:
+            self._preview_modes[sample_id] = "raw_image"
+
+    def _whole_leaf_preview_ready(self, sample_id: str) -> bool:
+        preview = self._leaf_mask_previews.get(sample_id)
+        return (
+            preview is not None
+            and preview.status is LeafMaskPreviewStatus.SUCCESS
+            and preview.mask is not None
+        )
+
+    def _disease_preview_ready(self, sample_id: str) -> bool:
+        preview = self._disease_mask_previews.get(sample_id)
+        return (
+            preview is not None
+            and preview.status is DiseaseMaskPreviewStatus.READY
+            and preview.disease_mask is not None
+            and preview.healthy_tissue_mask is not None
+        )
+
+    def _update_preview_mode_controls(self, sample_id: str | None) -> None:
+        panel = self.inspector_panel
+        if sample_id is None:
+            panel.set_preview_mode_enabled(False)
+            panel.set_preview_mode_key("raw_image")
+            for mode_key in ("raw_image", "whole_leaf", "disease", "healthy_tissue"):
+                panel.set_preview_mode_item_enabled(mode_key, mode_key == "raw_image")
+            return
+
+        panel.set_preview_mode_item_enabled("raw_image", True)
+        panel.set_preview_mode_item_enabled("whole_leaf", self._whole_leaf_preview_ready(sample_id))
+        disease_ready = self._disease_preview_ready(sample_id)
+        panel.set_preview_mode_item_enabled("disease", disease_ready)
+        panel.set_preview_mode_item_enabled("healthy_tissue", disease_ready)
+        panel.set_preview_mode_enabled(True)
+
+        mode = self._preview_modes.get(sample_id, "raw_image")
+        if mode == "whole_leaf" and not self._whole_leaf_preview_ready(sample_id):
+            mode = "raw_image"
+        if mode in {"disease", "healthy_tissue"} and not disease_ready:
+            mode = "raw_image"
+        self._preview_modes[sample_id] = mode
+        panel.set_preview_mode_key(mode)
+
+    def _get_or_create_transient_leaf_mask_preview(
+        self,
+        sample: SampleRecord,
+    ) -> LeafMaskPreview:
+        """Return a cached or freshly generated whole-leaf mask without persisting area."""
+        existing = self._leaf_mask_previews.get(sample.sample_id)
+        if (
+            existing is not None
+            and existing.status is LeafMaskPreviewStatus.SUCCESS
+            and existing.mask is not None
+        ):
+            return existing
+
+        image_path = sample.raw_image_absolute(self._workspace.root_path)  # type: ignore[union-attr]
+        try:
+            image_array = load_image_rgb_array(image_path)
+            preview = segment_leaf_preview(image_array)
+        except (OSError, ValueError) as exc:
+            preview = LeafMaskPreview(
+                mask=None,
+                status=LeafMaskPreviewStatus.FAILED,
+                warnings=[str(exc)],
+            )
+
+        previous = self._leaf_mask_previews.get(sample.sample_id)
+        self._leaf_mask_previews[sample.sample_id] = preview
+        if previous is not None and (
+            previous.status != preview.status
+            or previous.mask is None
+            or preview.mask is None
+            or not np.array_equal(previous.mask, preview.mask)
+            or previous.settings_snapshot != preview.settings_snapshot
+        ):
+            self._invalidate_disease_preview(sample.sample_id)
+
+        return preview
+
     def _apply_sample_calibration_display(self, sample: SampleRecord) -> None:
         if self._workspace is None:
             return
@@ -739,20 +899,48 @@ class MainWindow(QMainWindow):
             self.image_canvas.set_saved_calibration_line(None, None)
 
         preview = self._leaf_mask_previews.get(sample.sample_id)
-        preview_status, warnings = _format_leaf_mask_preview_status(preview)
+        preview_status, leaf_warnings = _format_leaf_mask_preview_status(preview)
+        disease_preview = self._disease_mask_previews.get(sample.sample_id)
+        disease_status, disease_warnings = _format_disease_mask_preview_status(disease_preview)
+        warnings = disease_warnings or leaf_warnings
         self.inspector_panel.show_sample(
             sample,
             self._workspace,
             preview_status=preview_status,
+            disease_preview_status=disease_status,
             warnings=warnings,
         )
-        self.inspector_panel.show_leaf_mask_preview_fields(
+        self.inspector_panel.show_whole_leaf_preview_fields(
             status=preview_status,
-            warnings=warnings,
+            warnings=leaf_warnings,
         )
-        self._apply_leaf_mask_overlay(preview)
+        self.inspector_panel.show_disease_preview_fields(
+            status=disease_status,
+            warnings=disease_warnings,
+        )
+        self._update_preview_mode_controls(sample.sample_id)
+        self._apply_active_preview_overlay(sample.sample_id)
         self.inspector_panel.set_save_calibration_enabled(False)
         self._update_status_bar(sample=sample)
+
+    def _apply_active_preview_overlay(self, sample_id: str) -> None:
+        mode = self._preview_modes.get(sample_id, "raw_image")
+        leaf_preview = self._leaf_mask_previews.get(sample_id)
+        disease_preview = self._disease_mask_previews.get(sample_id)
+
+        if mode == "raw_image":
+            self.image_canvas.clear_leaf_mask_overlay()
+            return
+        if mode == "whole_leaf":
+            self._apply_leaf_mask_overlay(leaf_preview)
+            return
+        if mode == "disease":
+            self._apply_disease_mask_overlay(disease_preview)
+            return
+        if mode == "healthy_tissue":
+            self._apply_healthy_tissue_mask_overlay(disease_preview)
+            return
+        self.image_canvas.clear_leaf_mask_overlay()
 
     def _apply_leaf_mask_overlay(self, preview: LeafMaskPreview | None) -> None:
         if (
@@ -764,6 +952,30 @@ class MainWindow(QMainWindow):
             return
 
         overlay_image = leaf_mask_to_qimage(preview.mask)
+        self.image_canvas.set_leaf_mask_overlay(QPixmap.fromImage(overlay_image))
+
+    def _apply_disease_mask_overlay(self, preview: DiseaseMaskPreview | None) -> None:
+        if (
+            preview is None
+            or preview.status is not DiseaseMaskPreviewStatus.READY
+            or preview.disease_mask is None
+        ):
+            self.image_canvas.clear_leaf_mask_overlay()
+            return
+
+        overlay_image = disease_mask_to_qimage(preview.disease_mask)
+        self.image_canvas.set_leaf_mask_overlay(QPixmap.fromImage(overlay_image))
+
+    def _apply_healthy_tissue_mask_overlay(self, preview: DiseaseMaskPreview | None) -> None:
+        if (
+            preview is None
+            or preview.status is not DiseaseMaskPreviewStatus.READY
+            or preview.healthy_tissue_mask is None
+        ):
+            self.image_canvas.clear_leaf_mask_overlay()
+            return
+
+        overlay_image = healthy_tissue_mask_to_qimage(preview.healthy_tissue_mask)
         self.image_canvas.set_leaf_mask_overlay(QPixmap.fromImage(overlay_image))
 
     def _persist_leaf_area_from_preview(
@@ -797,12 +1009,12 @@ class MainWindow(QMainWindow):
             measurement,
         )
 
-    def _on_preview_leaf_mask(self) -> None:
+    def _on_preview_whole_leaf(self) -> None:
         if self._workspace is None or self._selected_sample_id is None:
             QMessageBox.information(
                 self,
                 "No Sample Selected",
-                "Select a sample with a raw image before previewing a leaf mask.",
+                "Select a sample with a raw image before previewing a whole-leaf mask.",
             )
             return
 
@@ -822,6 +1034,8 @@ class MainWindow(QMainWindow):
             )
 
         self._leaf_mask_previews[sample.sample_id] = preview
+        self._invalidate_disease_preview(sample.sample_id)
+
         preview_status, warnings = _format_leaf_mask_preview_status(preview)
         preview_succeeded_without_calibration = False
 
@@ -830,6 +1044,7 @@ class MainWindow(QMainWindow):
                 sample = self._persist_leaf_area_from_preview(sample, preview)
             else:
                 preview_succeeded_without_calibration = True
+            self._preview_modes[sample.sample_id] = "whole_leaf"
             self._update_status_bar(
                 sample=sample,
                 transient=f"Whole Leaf Mask Preview ready: {sample.display_name}",
@@ -841,19 +1056,150 @@ class MainWindow(QMainWindow):
                 transient=f"Whole Leaf Mask Preview failed: {warning}",
             )
 
+        disease_preview = self._disease_mask_previews.get(sample.sample_id)
+        disease_status, _ = _format_disease_mask_preview_status(disease_preview)
         self.inspector_panel.show_sample(
             sample,
             self._workspace,
             preview_status=preview_status,
+            disease_preview_status=disease_status,
             preview_succeeded_without_calibration=preview_succeeded_without_calibration,
             warnings=warnings,
         )
-        self.inspector_panel.show_leaf_mask_preview_fields(
+        self.inspector_panel.show_whole_leaf_preview_fields(
             status=preview_status,
             warnings=warnings,
         )
-        self._apply_leaf_mask_overlay(preview)
+        self._update_preview_mode_controls(sample.sample_id)
+        self._apply_active_preview_overlay(sample.sample_id)
         self._update_status_bar(sample=sample)
+
+    def _on_preview_disease_mask(self) -> None:
+        if self._workspace is None or self._selected_sample_id is None:
+            QMessageBox.information(
+                self,
+                "No Sample Selected",
+                "Select a sample with a raw image before previewing candidate disease.",
+            )
+            return
+
+        sample = self._workspace.get_sample(self._selected_sample_id)
+        if sample is None:
+            return
+
+        leaf_preview = self._get_or_create_transient_leaf_mask_preview(sample)
+        leaf_status, leaf_warnings = _format_leaf_mask_preview_status(leaf_preview)
+
+        if (
+            leaf_preview.status is not LeafMaskPreviewStatus.SUCCESS
+            or leaf_preview.mask is None
+        ):
+            disease_preview = DiseaseMaskPreview(
+                disease_mask=None,
+                healthy_tissue_mask=None,
+                status=DiseaseMaskPreviewStatus.FAILED,
+                warnings=["Whole-leaf preview is required."],
+            )
+            self._disease_mask_previews[sample.sample_id] = disease_preview
+            disease_status, disease_warnings = _format_disease_mask_preview_status(
+                disease_preview
+            )
+            combined_warnings = disease_warnings or leaf_warnings
+            self.inspector_panel.show_sample(
+                sample,
+                self._workspace,
+                preview_status=leaf_status,
+                disease_preview_status=disease_status,
+                warnings=combined_warnings,
+            )
+            self.inspector_panel.show_whole_leaf_preview_fields(
+                status=leaf_status,
+                warnings=leaf_warnings,
+            )
+            self.inspector_panel.show_disease_preview_fields(
+                status=disease_status,
+                warnings=disease_warnings,
+            )
+            self._update_preview_mode_controls(sample.sample_id)
+            self._apply_active_preview_overlay(sample.sample_id)
+            self._update_status_bar(
+                sample=sample,
+                transient="Candidate disease preview requires a valid whole-leaf mask.",
+            )
+            return
+
+        image_path = sample.raw_image_absolute(self._workspace.root_path)
+        try:
+            image_array = load_image_rgb_array(image_path)
+            settings_version = int(
+                leaf_preview.settings_snapshot.get("settings_version", SETTINGS_VERSION)
+            )
+            disease_preview = segment_disease_preview(
+                image_array,
+                leaf_preview.mask,
+                whole_leaf_method=leaf_preview.method or PREVIEW_METHOD,
+                whole_leaf_settings_version=settings_version,
+            )
+        except (OSError, ValueError) as exc:
+            disease_preview = DiseaseMaskPreview(
+                disease_mask=None,
+                healthy_tissue_mask=None,
+                status=DiseaseMaskPreviewStatus.FAILED,
+                warnings=[str(exc)],
+            )
+
+        self._disease_mask_previews[sample.sample_id] = disease_preview
+        disease_status, disease_warnings = _format_disease_mask_preview_status(
+            disease_preview
+        )
+        combined_warnings = disease_warnings or leaf_warnings
+
+        if disease_preview.status is DiseaseMaskPreviewStatus.READY:
+            self._preview_modes[sample.sample_id] = "disease"
+            self._update_status_bar(
+                sample=sample,
+                transient=f"Candidate disease preview ready: {sample.display_name}",
+            )
+        else:
+            warning = (
+                disease_preview.warnings[0]
+                if disease_preview.warnings
+                else "Candidate disease preview failed."
+            )
+            self._update_status_bar(
+                sample=sample,
+                transient=f"Candidate disease preview failed: {warning}",
+            )
+
+        self.inspector_panel.show_sample(
+            sample,
+            self._workspace,
+            preview_status=leaf_status,
+            disease_preview_status=disease_status,
+            warnings=combined_warnings,
+        )
+        self.inspector_panel.show_whole_leaf_preview_fields(
+            status=leaf_status,
+            warnings=leaf_warnings,
+        )
+        self.inspector_panel.show_disease_preview_fields(
+            status=disease_status,
+            warnings=disease_warnings,
+        )
+        self._update_preview_mode_controls(sample.sample_id)
+        self._apply_active_preview_overlay(sample.sample_id)
+        self._update_status_bar(sample=sample)
+
+    def _on_preview_mode_changed(self) -> None:
+        if self._selected_sample_id is None:
+            return
+        mode = self.inspector_panel.get_preview_mode_key()
+        self._preview_modes[self._selected_sample_id] = mode
+        self._apply_active_preview_overlay(self._selected_sample_id)
+
+    def _on_preview_leaf_mask(self) -> None:
+        """Backward-compatible alias."""
+        self._on_preview_whole_leaf()
 
     def _show_sample(self, sample_id: str) -> None:
         if self._workspace is None:
