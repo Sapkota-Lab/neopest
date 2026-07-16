@@ -2,8 +2,19 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, Qt, Signal
-from PySide6.QtGui import QAction, QDrag, QMouseEvent
+from collections.abc import Iterator
+
+from PySide6.QtCore import QPoint, QRect, Qt, Signal
+from PySide6.QtGui import (
+    QAction,
+    QDrag,
+    QFont,
+    QFontMetrics,
+    QMouseEvent,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
@@ -24,6 +35,76 @@ NODE_TYPE_ROLE = Qt.ItemDataRole.UserRole
 NODE_ID_ROLE = Qt.ItemDataRole.UserRole + 1
 MIME_SAMPLE_ID = "application/x-neopest-sample-id"
 DROP_HIGHLIGHT_ROLE = Qt.ItemDataRole.UserRole + 2
+
+_DRAG_CARD_MAX_WIDTH = 280
+_DRAG_CARD_PADDING_H = 8
+_DRAG_CARD_PADDING_V = 6
+_DRAG_CARD_RADIUS = 6
+_DRAG_CARD_BORDER = 1
+_DRAG_ROW_GAP_TOLERANCE_PX = 6
+_DRAG_HOTSPOT = QPoint(12, 10)
+
+
+def build_sample_drag_pixmap(
+    sample_name: str,
+    palette,
+    *,
+    device_pixel_ratio: float = 1.0,
+    max_width: int = _DRAG_CARD_MAX_WIDTH,
+) -> QPixmap:
+    """Build a compact bordered drag card showing ``sample_name``."""
+    font = QFont()
+    font.setPointSize(10)
+    metrics = QFontMetrics(font)
+    text_max = max_width - (2 * _DRAG_CARD_PADDING_H)
+    elided = metrics.elidedText(
+        sample_name,
+        Qt.TextElideMode.ElideMiddle,
+        text_max,
+    )
+    text_width = metrics.horizontalAdvance(elided)
+    card_width = min(max_width, text_width + (2 * _DRAG_CARD_PADDING_H))
+    card_height = metrics.height() + (2 * _DRAG_CARD_PADDING_V)
+
+    pixmap = QPixmap(
+        max(1, int(card_width * device_pixel_ratio)),
+        max(1, int(card_height * device_pixel_ratio)),
+    )
+    pixmap.setDevicePixelRatio(device_pixel_ratio)
+    pixmap.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    background = palette.color(palette.ColorRole.Base)
+    text_color = palette.color(palette.ColorRole.Text)
+    border_color = palette.color(palette.ColorRole.Mid)
+
+    logical_rect = QRect(0, 0, card_width, card_height)
+    painter.setPen(QPen(border_color, _DRAG_CARD_BORDER))
+    painter.setBrush(background)
+    painter.drawRoundedRect(
+        logical_rect.adjusted(0, 0, -1, -1),
+        _DRAG_CARD_RADIUS,
+        _DRAG_CARD_RADIUS,
+    )
+
+    painter.setPen(text_color)
+    painter.setFont(font)
+    text_rect = logical_rect.adjusted(
+        _DRAG_CARD_PADDING_H,
+        _DRAG_CARD_PADDING_V,
+        -_DRAG_CARD_PADDING_H,
+        -_DRAG_CARD_PADDING_V,
+    )
+    painter.drawText(text_rect, int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), elided)
+    painter.end()
+    return pixmap
+
+
+def sample_drag_hotspot() -> QPoint:
+    """Return the cursor hotspot for the sample drag card."""
+    return QPoint(_DRAG_HOTSPOT)
 
 
 class ExplorerTreeWidget(QTreeWidget):
@@ -57,9 +138,11 @@ class ExplorerTreeWidget(QTreeWidget):
         self.customContextMenuRequested.connect(self._show_context_menu)
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
-        self.setDropIndicatorShown(True)
+        self.setDropIndicatorShown(False)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        self.setAutoScroll(True)
+        self.setAutoScrollMargin(24)
         self.viewport().setAcceptDrops(True)
         header = self.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -211,17 +294,198 @@ class ExplorerTreeWidget(QTreeWidget):
             return payload or None
         return None
 
-    def _drop_target_group_id(self, item: QTreeWidgetItem | None) -> str | None:
-        if item is None:
-            return None
-        node_type = self.item_node_type(item)
-        if node_type == "condition_group":
-            return self.item_node_id(item)
+    def _parent_condition_group_item(
+        self, item: QTreeWidgetItem | None
+    ) -> QTreeWidgetItem | None:
+        current = item
+        while current is not None:
+            if self.item_node_type(current) == "condition_group":
+                return current
+            current = current.parent()
         return None
 
-    def accepts_sample_drop_on_item(self, item: QTreeWidgetItem | None) -> bool:
-        """Return True when ``item`` is a valid sample drop target."""
-        return self._drop_target_group_id(item) is not None
+    def _find_sample_parent_group_id(self, sample_id: str) -> str | None:
+        root = self._workspace_root_item()
+        if root is None:
+            return None
+        for group_index in range(root.childCount()):
+            group_item = root.child(group_index)
+            if group_item is None:
+                continue
+            for sample_index in range(group_item.childCount()):
+                sample_item = group_item.child(sample_index)
+                if sample_item is None:
+                    continue
+                if (
+                    self.item_node_type(sample_item) == "sample"
+                    and self.item_node_id(sample_item) == sample_id
+                ):
+                    return self.item_node_id(group_item)
+        return None
+
+    def resolve_drag_destination_group_from_item(
+        self,
+        item: QTreeWidgetItem | None,
+        *,
+        dragging_sample_id: str | None = None,
+    ) -> tuple[str | None, QTreeWidgetItem | None]:
+        """Map a tree item to a destination condition group."""
+        if item is None:
+            return None, None
+
+        if self.item_node_type(item) == "workspace":
+            return None, None
+
+        group_item = self._parent_condition_group_item(item)
+        if group_item is None:
+            return None, None
+
+        group_id = self.item_node_id(group_item)
+        if not group_id:
+            return None, None
+
+        if dragging_sample_id:
+            if (
+                self.item_node_type(item) == "sample"
+                and self.item_node_id(item) == dragging_sample_id
+            ):
+                return None, None
+
+            source_group_id = self._find_sample_parent_group_id(dragging_sample_id)
+            if source_group_id == group_id:
+                return None, None
+
+        return group_id, group_item
+
+    def resolve_drag_destination_group(
+        self,
+        item: QTreeWidgetItem | None,
+        *,
+        dragging_sample_id: str | None = None,
+    ) -> tuple[str | None, QTreeWidgetItem | None]:
+        """Backward-compatible alias for item-based destination resolution."""
+        return self.resolve_drag_destination_group_from_item(
+            item,
+            dragging_sample_id=dragging_sample_id,
+        )
+
+    def _item_depth(self, item: QTreeWidgetItem) -> int:
+        depth = 0
+        current = item.parent()
+        while current is not None:
+            depth += 1
+            current = current.parent()
+        return depth
+
+    def _iter_visible_items(self) -> Iterator[QTreeWidgetItem]:
+        def walk(parent: QTreeWidgetItem) -> Iterator[QTreeWidgetItem]:
+            yield parent
+            for index in range(parent.childCount()):
+                child = parent.child(index)
+                if child is None:
+                    continue
+                yield from walk(child)
+
+        for index in range(self.topLevelItemCount()):
+            root = self.topLevelItem(index)
+            if root is not None:
+                yield from walk(root)
+
+    def _extended_row_rect(self, item: QTreeWidgetItem) -> QRect:
+        rect = self.visualItemRect(item)
+        if not rect.isValid():
+            return rect
+        return QRect(0, rect.top(), max(self.viewport().width(), rect.right()), rect.height())
+
+    def _item_at_viewport_position(self, position: QPoint) -> QTreeWidgetItem | None:
+        item = self.itemAt(position)
+        if item is not None:
+            return item
+
+        index = self.indexAt(position)
+        if index.isValid():
+            indexed_item = self.itemFromIndex(index)
+            if indexed_item is not None:
+                return indexed_item
+
+        row_hits: list[tuple[int, QTreeWidgetItem]] = []
+        for candidate in self._iter_visible_items():
+            rect = self._extended_row_rect(candidate)
+            if rect.isValid() and rect.contains(position):
+                row_hits.append((self._item_depth(candidate), candidate))
+
+        if row_hits:
+            _depth, best_item = max(row_hits, key=lambda pair: pair[0])
+            return best_item
+
+        nearest_item: QTreeWidgetItem | None = None
+        nearest_distance: int | None = None
+        for candidate in self._iter_visible_items():
+            rect = self._extended_row_rect(candidate)
+            if not rect.isValid():
+                continue
+            if position.y() < rect.top():
+                distance = rect.top() - position.y()
+            elif position.y() > rect.bottom():
+                distance = position.y() - rect.bottom()
+            else:
+                distance = 0
+            if nearest_distance is None or distance < nearest_distance:
+                nearest_distance = distance
+                nearest_item = candidate
+
+        if (
+            nearest_item is not None
+            and nearest_distance is not None
+            and nearest_distance <= _DRAG_ROW_GAP_TOLERANCE_PX
+        ):
+            return nearest_item
+
+        return None
+
+    def resolve_drag_destination_group_at_position(
+        self,
+        position: QPoint,
+        *,
+        dragging_sample_id: str | None = None,
+    ) -> tuple[str | None, QTreeWidgetItem | None]:
+        """Map a viewport position to a destination condition group."""
+        item = self._item_at_viewport_position(position)
+        return self.resolve_drag_destination_group_from_item(
+            item,
+            dragging_sample_id=dragging_sample_id,
+        )
+
+    def _drop_target_group_id(
+        self,
+        item: QTreeWidgetItem | None,
+        *,
+        dragging_sample_id: str | None = None,
+    ) -> str | None:
+        group_id, _group_item = self.resolve_drag_destination_group_from_item(
+            item,
+            dragging_sample_id=dragging_sample_id,
+        )
+        return group_id
+
+    def accepts_sample_drop_on_item(
+        self,
+        item: QTreeWidgetItem | None,
+        *,
+        dragging_sample_id: str | None = None,
+    ) -> bool:
+        """Return True when ``item`` resolves to a valid sample drop target."""
+        return (
+            self.resolve_drag_destination_group_from_item(
+                item,
+                dragging_sample_id=dragging_sample_id,
+            )[0]
+            is not None
+        )
+
+    def drop_highlight_item(self) -> QTreeWidgetItem | None:
+        """Return the condition-group row currently highlighted during drag."""
+        return self._drop_highlight_item
 
     def _on_selection_changed(self) -> None:
         item = self.currentItem()
@@ -355,27 +619,130 @@ class ExplorerTreeWidget(QTreeWidget):
         mime_data.setData(MIME_SAMPLE_ID, sample_id.encode("utf-8"))
         drag = QDrag(self)
         drag.setMimeData(mime_data)
+        pixmap = build_sample_drag_pixmap(
+            item.text(0),
+            self.palette(),
+            device_pixel_ratio=self.devicePixelRatioF(),
+        )
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(sample_drag_hotspot())
+        self._clear_drop_highlight()
         drag.exec(Qt.DropAction.MoveAction)
+        self._clear_drop_highlight()
+
+    def _viewport_position_from_event(self, event) -> QPoint:
+        if hasattr(event, "position"):
+            return event.position().toPoint()
+        return event.pos()
+
+    def _accept_sample_move_action(self, event) -> None:
+        event.setDropAction(Qt.DropAction.MoveAction)
+        event.accept()
+
+    def update_drag_hover_at_position(
+        self,
+        position: QPoint,
+        *,
+        dragging_sample_id: str,
+    ) -> bool:
+        """Resolve and apply drag-hover highlight for one viewport position."""
+        group_id, group_item = self.resolve_drag_destination_group_at_position(
+            position,
+            dragging_sample_id=dragging_sample_id,
+        )
+        if group_id is None:
+            self._clear_drop_highlight()
+            return False
+        self._set_drop_highlight(group_item)
+        return True
+
+    def update_drag_hover_for_item(
+        self,
+        item: QTreeWidgetItem | None,
+        *,
+        dragging_sample_id: str,
+    ) -> bool:
+        """Resolve and apply drag-hover highlight for one tree item."""
+        group_id, group_item = self.resolve_drag_destination_group_from_item(
+            item,
+            dragging_sample_id=dragging_sample_id,
+        )
+        if group_id is None:
+            self._clear_drop_highlight()
+            return False
+        self._set_drop_highlight(group_item)
+        return True
+
+    def drop_sample_at_position(
+        self,
+        position: QPoint,
+        *,
+        dragging_sample_id: str,
+    ) -> bool:
+        """Apply a sample drop at ``position`` when it resolves to a valid group."""
+        self._clear_drop_highlight()
+        group_id, _group_item = self.resolve_drag_destination_group_at_position(
+            position,
+            dragging_sample_id=dragging_sample_id,
+        )
+        if group_id is None:
+            return False
+        self.sample_move_requested.emit(dragging_sample_id, group_id)
+        return True
+
+    def drop_sample_on_item(
+        self,
+        item: QTreeWidgetItem | None,
+        *,
+        dragging_sample_id: str,
+    ) -> bool:
+        """Apply a sample drop onto ``item`` when it resolves to a valid group."""
+        self._clear_drop_highlight()
+        group_id, _group_item = self.resolve_drag_destination_group_from_item(
+            item,
+            dragging_sample_id=dragging_sample_id,
+        )
+        if group_id is None:
+            return False
+        self.sample_move_requested.emit(dragging_sample_id, group_id)
+        return True
+
+    def _drag_destination_at(
+        self, event
+    ) -> tuple[str | None, QTreeWidgetItem | None, str | None]:
+        sample_id = self._sample_id_from_mime(event.mimeData())
+        if sample_id is None:
+            return None, None, None
+        position = self._viewport_position_from_event(event)
+        group_id, group_item = self.resolve_drag_destination_group_at_position(
+            position,
+            dragging_sample_id=sample_id,
+        )
+        return group_id, group_item, sample_id
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt API
-        if self._sample_id_from_mime(event.mimeData()) is None:
+        sample_id = self._sample_id_from_mime(event.mimeData())
+        if sample_id is None:
             event.ignore()
             return
-        if self.accepts_sample_drop_on_item(self.itemAt(event.position().toPoint())):
-            event.acceptProposedAction()
-            return
-        event.ignore()
+        self._accept_sample_move_action(event)
+        self.update_drag_hover_at_position(
+            self._viewport_position_from_event(event),
+            dragging_sample_id=sample_id,
+        )
 
     def dragMoveEvent(self, event) -> None:  # noqa: N802 - Qt API
-        if self._sample_id_from_mime(event.mimeData()) is None:
+        sample_id = self._sample_id_from_mime(event.mimeData())
+        if sample_id is None:
             event.ignore()
             self._clear_drop_highlight()
             return
 
-        item = self.itemAt(event.position().toPoint())
-        if self.accepts_sample_drop_on_item(item):
-            event.acceptProposedAction()
-            self._set_drop_highlight(item)
+        if self.update_drag_hover_at_position(
+            self._viewport_position_from_event(event),
+            dragging_sample_id=sample_id,
+        ):
+            self._accept_sample_move_action(event)
             return
 
         event.ignore()
@@ -386,17 +753,19 @@ class ExplorerTreeWidget(QTreeWidget):
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event) -> None:  # noqa: N802 - Qt API
-        self._clear_drop_highlight()
         sample_id = self._sample_id_from_mime(event.mimeData())
-        destination_group_id = self._drop_target_group_id(
-            self.itemAt(event.position().toPoint())
-        )
-        if sample_id is None or destination_group_id is None:
+        if sample_id is None:
             event.ignore()
+            self._clear_drop_highlight()
             return
 
-        self.sample_move_requested.emit(sample_id, destination_group_id)
-        event.acceptProposedAction()
+        if self.drop_sample_at_position(
+            self._viewport_position_from_event(event),
+            dragging_sample_id=sample_id,
+        ):
+            self._accept_sample_move_action(event)
+            return
+        event.ignore()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt API
         item = self.itemAt(event.position().toPoint())
