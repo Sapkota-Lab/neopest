@@ -33,3 +33,6 @@ venv/
 
 # Release archives
 *.zip
+
+# Local screen-recording sources (workflow GIFs are committed under docs/images/workflows/)
+docs/media/source/*.mov

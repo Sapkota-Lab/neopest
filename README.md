@@ -88,9 +88,21 @@ If NeoPest opens and `~/Documents/NeoPest` is available, installation is complet
 
 1. Launch NeoPest (`python3 run_app.py` with `.venv` activated).
 2. Create or select a **condition group** (**File → New Condition Group** or right-click in Explorer).
+
+   ![Creating a condition group and organizing samples with drag and drop](docs/images/workflows/new-condition-drag-drop.gif)
+
 3. **Import** a leaf image (**File → Import Images**).
+
+   ![Importing strawberry leaf images into NeoPest](docs/images/workflows/import.gif)
+
 4. Select the sample and perform **manual 1-inch calibration** on the ruler.
+
+   ![Setting an image-specific 1-inch calibration](docs/images/workflows/calibration.gif)
+
 5. Use **View** to inspect masks (display only): Raw Image, Whole Leaf Mask, Candidate Disease Mask, Healthy Tissue Preview.
+
+   ![Inspecting whole-leaf, candidate-disease, and healthy-tissue views](docs/images/workflows/mask-view.gif)
+
 6. Click **Calculate Results**.
 7. Review measurements in the Inspector (see below).
 8. If status shows **Recalculation required**, click **Recalculate Results**.
