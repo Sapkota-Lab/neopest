@@ -31,8 +31,8 @@ venv/
 *.tiff
 *.bmp
 
-# Release archives
-*.zip
+# Local research datasets (not committed)
+/research_data/
 
 # Local screen-recording sources (workflow GIFs are committed under docs/images/workflows/)
 docs/media/source/*.mov
