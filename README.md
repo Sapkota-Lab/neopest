@@ -83,13 +83,13 @@ If NeoPest opens and `~/Documents/NeoPest` is available, installation is complet
 ## First Use
 
 1. Launch NeoPest (`python3 run_app.py` with `.venv` activated).
-2. Create or select a **condition group** (**File → New Condition Group** or right-click in Explorer).
-
-   ![Creating a condition group and organizing samples with drag and drop](docs/images/workflows/new-condition-drag-drop.gif)
-
-3. **Import** a leaf image (**File → Import Images**).
+2. **Import** a leaf image (**File → Import Images**).
 
    ![Importing strawberry leaf images into NeoPest](docs/images/workflows/import.gif)
+
+3. Create or select a **condition group** (**File → New Condition Group** or right-click in Explorer).
+
+   ![Creating a condition group and organizing samples with drag and drop](docs/images/workflows/new-condition-drag-drop.gif)
 
 4. Select the sample and perform **manual 1-inch calibration** on the ruler.
 
