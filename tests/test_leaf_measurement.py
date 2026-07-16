@@ -160,7 +160,7 @@ class TestLeafMeasurementPersistence(unittest.TestCase):
         self.assertEqual(sample_record.leaf_measurement.status, "stale")
 
 
-class TestAutomaticLeafAreaGui(unittest.TestCase):
+class TestExplicitLeafAreaGui(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         _ensure_qt_app()
@@ -180,13 +180,13 @@ class TestAutomaticLeafAreaGui(unittest.TestCase):
         save_sample_calibration(workspace, sample_id, calibration)
         return root, workspace, sample_id, tmp
 
-    def test_successful_preview_with_calibration_calculates_area(self) -> None:
+    def test_explicit_calculation_with_calibration_persists_area(self) -> None:
         root, workspace, sample_id, tmp = self._workspace_with_calibrated_leaf()
         try:
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(sample_id)
-            window._on_preview_leaf_mask()
+            window._on_calculate_results()
 
             sample = workspace.get_sample(sample_id)
             assert sample is not None
@@ -198,7 +198,7 @@ class TestAutomaticLeafAreaGui(unittest.TestCase):
         finally:
             tmp.cleanup()
 
-    def test_successful_preview_without_calibration_does_not_fabricate_area(self) -> None:
+    def test_view_without_calibration_does_not_fabricate_area(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp) / "ws"
             workspace = initialize_workspace(root, display_name="No Cal")
@@ -212,7 +212,8 @@ class TestAutomaticLeafAreaGui(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(imported[0].sample_id)
-            window._on_preview_leaf_mask()
+            window.inspector_panel.set_view_mode_key("whole_leaf")
+            window._on_view_mode_changed()
 
             sample = workspace.get_sample(imported[0].sample_id)
             assert sample is not None
@@ -221,8 +222,12 @@ class TestAutomaticLeafAreaGui(unittest.TestCase):
                 window.inspector_panel.total_leaf_area_label.text(),
                 "Calibration required",
             )
+            self.assertEqual(
+                window.inspector_panel.result_status_value.text(),
+                "Calibration required",
+            )
 
-    def test_failed_preview_does_not_calculate_area(self) -> None:
+    def test_failed_calculation_does_not_persist_area(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp) / "ws"
             workspace = initialize_workspace(root, display_name="Fail")
@@ -238,19 +243,19 @@ class TestAutomaticLeafAreaGui(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(imported[0].sample_id)
-            window._on_preview_leaf_mask()
+            window._on_calculate_results()
 
             sample = workspace.get_sample(imported[0].sample_id)
             assert sample is not None
             self.assertIsNone(sample.leaf_measurement)
 
-    def test_automatic_measurement_does_not_change_analysis_status(self) -> None:
+    def test_explicit_calculation_does_not_change_analysis_status(self) -> None:
         root, workspace, sample_id, tmp = self._workspace_with_calibrated_leaf()
         try:
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(sample_id)
-            window._on_preview_leaf_mask()
+            window._on_calculate_results()
 
             sample = workspace.get_sample(sample_id)
             assert sample is not None
@@ -264,7 +269,7 @@ class TestAutomaticLeafAreaGui(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(sample_id)
-            window._on_preview_leaf_mask()
+            window._on_calculate_results()
             expected_text = window.inspector_panel.total_leaf_area_label.text()
 
             loaded = load_workspace(root)
@@ -283,16 +288,15 @@ class TestAutomaticLeafAreaGui(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(sample_id)
-            window._on_preview_leaf_mask()
+            window._on_calculate_results()
             self.assertIn("in²", window.inspector_panel.total_leaf_area_label.text())
 
             calibration_b = build_one_inch_manual_calibration_record((0.0, 0.0), (60.0, 0.0))
             sample = save_sample_calibration(workspace, sample_id, calibration_b)
-            window._apply_sample_calibration_display(sample)
-            self.assertNotIn("in²", window.inspector_panel.total_leaf_area_label.text())
-            self.assertIn(
-                window.inspector_panel.total_leaf_area_label.text(),
-                {"Recalculate leaf mask", "Not calculated"},
+            window._refresh_sample_inspector(sample)
+            self.assertEqual(
+                window.inspector_panel.result_status_value.text(),
+                "Recalculation required",
             )
         finally:
             tmp.cleanup()
@@ -326,7 +330,7 @@ class TestInspectorUiCleanup(unittest.TestCase):
                     panel.condition_group_label.text(),
                     panel.total_leaf_area_label.text(),
                     panel.calibration_status_value.text(),
-                    panel.whole_leaf_status_value.text(),
+                    panel.result_status_value.text(),
                 ]
             )
             self.assertNotIn(sample.sample_id, visible_text)

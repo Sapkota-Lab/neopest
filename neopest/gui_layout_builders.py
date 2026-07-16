@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
@@ -30,7 +31,6 @@ from neopest.gui_styles import (
     apply_inspector_action_button,
     apply_inspector_panel_style,
     apply_main_splitter_style,
-    apply_measurement_value_style,
     apply_panel_margins,
     apply_primary_action_button,
     apply_sample_identity_style,
@@ -39,15 +39,25 @@ from neopest.gui_styles import (
     apply_workspace_preview_panel_style,
 )
 from neopest.measurements import (
-    CURRENT_LEAF_MASK_METHOD,
-    CURRENT_LEAF_MASK_SETTINGS_VERSION,
-    leaf_measurement_matches_provenance,
+    candidate_disease_measurement_matches_provenance,
+    format_area_in2_display,
+    format_coverage_percent_display,
+    phase5_measurement_row_placeholder,
+    phase5_result_is_current,
+    phase5_result_status_display,
 )
 from neopest.metadata import SampleRecord, WorkspaceMetadata
 from neopest.results import CalibrationStatus
 
 if TYPE_CHECKING:
     from neopest.gui import MainWindow
+
+VIEW_MODE_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("Raw Image", "raw_image"),
+    ("Whole Leaf Mask", "whole_leaf"),
+    ("Candidate Disease Mask", "disease"),
+    ("Healthy Tissue Preview", "healthy_tissue"),
+)
 
 
 def _format_calibration_status_value(status: CalibrationStatus) -> str:
@@ -58,58 +68,37 @@ def _format_calibration_status_value(status: CalibrationStatus) -> str:
     return "Missing"
 
 
-def _format_whole_leaf_status_value(*, preview_status: str | None) -> str:
-    if preview_status == "Preview Ready":
-        return "Ready"
-    if preview_status == "Failed Preview":
-        return "Failed"
-    return "Not previewed"
-
-
-def _format_disease_mask_status_value(*, preview_status: str | None) -> str:
-    if preview_status == "Ready":
-        return "Preview ready"
-    if preview_status == "Failed":
-        return "Failed"
-    return "Not previewed"
-
-
-def _format_total_leaf_area_display(
+def _calculation_button_state(
     sample: SampleRecord,
     *,
-    preview_status: str | None,
-    preview_succeeded_without_calibration: bool = False,
-) -> str:
-    """Format researcher-facing total leaf area text without performing area math."""
-    if preview_succeeded_without_calibration:
-        return "Calibration required"
-
+    image_available: bool,
+) -> tuple[str, bool, str]:
+    if not image_available:
+        return (
+            "Calculate Results",
+            False,
+            "Source image is not available for calculation.",
+        )
     if sample.calibration is None:
-        measurement = sample.leaf_measurement
-        if measurement is not None and measurement.status == "stale":
-            return "Calibration required"
-        if preview_status == "Preview Ready":
-            return "Calibration required"
-        return "Not calculated"
+        return (
+            "Calculate Results",
+            False,
+            "Manual calibration is required before calculating results.",
+        )
 
-    if not leaf_measurement_matches_provenance(
-        sample.leaf_measurement,
-        calibration=sample.calibration,
-        image_hash=sample.image_hash,
-        method=CURRENT_LEAF_MASK_METHOD,
-        settings_version=CURRENT_LEAF_MASK_SETTINGS_VERSION,
-    ):
-        if preview_status == "Preview Ready":
-            return "Recalculate leaf mask"
-        if sample.leaf_measurement is not None and sample.leaf_measurement.status == "stale":
-            return "Recalculate leaf mask"
-        return "Not calculated"
+    measurement = sample.candidate_disease_measurement
+    if measurement is not None and measurement.status == "valid":
+        if candidate_disease_measurement_matches_provenance(
+            measurement,
+            calibration=sample.calibration,
+            image_hash=sample.image_hash,
+        ):
+            return ("Results Up to Date", False, "Persisted results match current inputs.")
 
-    measurement = sample.leaf_measurement
-    assert measurement is not None
-    if measurement.leaf_area_in2 is None:
-        return "Not calculated"
-    return f"{measurement.leaf_area_in2:.2f} in²"
+    if measurement is not None and measurement.status == "stale":
+        return ("Recalculate Results", True, "Scientific inputs changed; recalculate to refresh.")
+
+    return ("Calculate Results", True, "Run explicit scientific calculation for this sample.")
 
 
 class SampleInspectorPanel(QWidget):
@@ -139,16 +128,66 @@ class SampleInspectorPanel(QWidget):
 
         layout.addSpacing(8)
 
-        area_caption = QLabel("TOTAL LEAF AREA")
-        apply_area_caption_style(area_caption)
-        layout.addWidget(area_caption)
+        measurements_caption = QLabel("MEASUREMENTS")
+        apply_area_caption_style(measurements_caption)
+        layout.addWidget(measurements_caption)
 
+        measurements_grid = QGridLayout()
+        measurements_grid.setHorizontalSpacing(12)
+        measurements_grid.setVerticalSpacing(6)
+        measurements_grid.setColumnStretch(1, 1)
+
+        total_leaf_caption = QLabel("Total leaf area")
+        apply_status_row_label_style(total_leaf_caption)
         self.total_leaf_area_label = QLabel("Not calculated")
-        apply_measurement_value_style(self.total_leaf_area_label)
+        apply_status_row_value_style(self.total_leaf_area_label)
         self.total_leaf_area_label.setWordWrap(True)
-        layout.addWidget(self.total_leaf_area_label)
+        self.total_leaf_area_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+
+        candidate_disease_caption = QLabel("Candidate disease area")
+        apply_status_row_label_style(candidate_disease_caption)
+        self.candidate_disease_area_label = QLabel("Not calculated")
+        apply_status_row_value_style(self.candidate_disease_area_label)
+        self.candidate_disease_area_label.setWordWrap(True)
+        self.candidate_disease_area_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+
+        coverage_caption = QLabel("Candidate disease coverage")
+        apply_status_row_label_style(coverage_caption)
+        self.candidate_disease_coverage_label = QLabel("Not calculated")
+        apply_status_row_value_style(self.candidate_disease_coverage_label)
+        self.candidate_disease_coverage_label.setWordWrap(True)
+        self.candidate_disease_coverage_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+
+        non_candidate_caption = QLabel("Non-candidate leaf area")
+        apply_status_row_label_style(non_candidate_caption)
+        self.non_candidate_leaf_area_label = QLabel("Not calculated")
+        apply_status_row_value_style(self.non_candidate_leaf_area_label)
+        self.non_candidate_leaf_area_label.setWordWrap(True)
+        self.non_candidate_leaf_area_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+
+        measurements_grid.addWidget(total_leaf_caption, 0, 0)
+        measurements_grid.addWidget(self.total_leaf_area_label, 0, 1)
+        measurements_grid.addWidget(candidate_disease_caption, 1, 0)
+        measurements_grid.addWidget(self.candidate_disease_area_label, 1, 1)
+        measurements_grid.addWidget(coverage_caption, 2, 0)
+        measurements_grid.addWidget(self.candidate_disease_coverage_label, 2, 1)
+        measurements_grid.addWidget(non_candidate_caption, 3, 0)
+        measurements_grid.addWidget(self.non_candidate_leaf_area_label, 3, 1)
+        layout.addLayout(measurements_grid)
 
         layout.addSpacing(8)
+
+        status_caption = QLabel("STATUS")
+        apply_area_caption_style(status_caption)
+        layout.addWidget(status_caption)
 
         status_grid = QGridLayout()
         status_grid.setHorizontalSpacing(12)
@@ -163,28 +202,18 @@ class SampleInspectorPanel(QWidget):
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
 
-        leaf_mask_caption = QLabel("Whole leaf")
-        apply_status_row_label_style(leaf_mask_caption)
-        self.whole_leaf_status_value = QLabel("—")
-        apply_status_row_value_style(self.whole_leaf_status_value)
-        self.whole_leaf_status_value.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
-
-        disease_mask_caption = QLabel("Candidate disease")
-        apply_status_row_label_style(disease_mask_caption)
-        self.disease_mask_status_value = QLabel("—")
-        apply_status_row_value_style(self.disease_mask_status_value)
-        self.disease_mask_status_value.setAlignment(
+        result_status_caption = QLabel("Results")
+        apply_status_row_label_style(result_status_caption)
+        self.result_status_value = QLabel("—")
+        apply_status_row_value_style(self.result_status_value)
+        self.result_status_value.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
 
         status_grid.addWidget(calibration_caption, 0, 0)
         status_grid.addWidget(self.calibration_status_value, 0, 1)
-        status_grid.addWidget(leaf_mask_caption, 1, 0)
-        status_grid.addWidget(self.whole_leaf_status_value, 1, 1)
-        status_grid.addWidget(disease_mask_caption, 2, 0)
-        status_grid.addWidget(self.disease_mask_status_value, 2, 1)
+        status_grid.addWidget(result_status_caption, 1, 0)
+        status_grid.addWidget(self.result_status_value, 1, 1)
         layout.addLayout(status_grid)
 
         self.warnings_label = QLabel("")
@@ -206,19 +235,17 @@ class SampleInspectorPanel(QWidget):
         self.set_manual_calibration_button = QPushButton("Set 1-Inch Calibration")
         self.save_calibration_button = QPushButton("Save Calibration")
         self.cancel_calibration_button = QPushButton("Cancel Calibration")
-        self.preview_whole_leaf_button = QPushButton("Preview Whole Leaf")
-        self.preview_disease_mask_button = QPushButton("Preview Candidate Disease")
+        self.calculate_results_button = QPushButton("Calculate Results")
         self.run_analysis_button = QPushButton("Run Analysis")
 
         apply_inspector_action_button(self.set_manual_calibration_button)
         apply_inspector_action_button(self.save_calibration_button)
         apply_inspector_action_button(self.cancel_calibration_button)
-        apply_primary_action_button(self.preview_whole_leaf_button)
-        apply_inspector_action_button(self.preview_disease_mask_button)
+        apply_primary_action_button(self.calculate_results_button)
         apply_inspector_action_button(self.run_analysis_button)
 
-        self.preview_disease_mask_button.setToolTip(
-            "Preview candidate brown/necrotic tissue only. Not confirmed disease."
+        self.calculate_results_button.setToolTip(
+            "Explicitly calculate and persist total leaf area and candidate disease metrics."
         )
         self.run_analysis_button.setEnabled(False)
         self.run_analysis_button.setVisible(False)
@@ -232,71 +259,64 @@ class SampleInspectorPanel(QWidget):
             self.set_manual_calibration_button,
             self.save_calibration_button,
             self.cancel_calibration_button,
-            self.preview_whole_leaf_button,
-            self.preview_disease_mask_button,
+            self.calculate_results_button,
         ):
             actions_layout.addWidget(button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        preview_mode_caption = QLabel("Preview mode")
-        apply_status_row_label_style(preview_mode_caption)
-        actions_layout.addWidget(preview_mode_caption, alignment=Qt.AlignmentFlag.AlignHCenter)
+        view_caption = QLabel("View")
+        apply_status_row_label_style(view_caption)
+        actions_layout.addWidget(view_caption, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        self.preview_mode_combo = QComboBox(self)
-        self.preview_mode_combo.addItem("Raw Image", "raw_image")
-        self.preview_mode_combo.addItem("Whole Leaf", "whole_leaf")
-        self.preview_mode_combo.addItem("Candidate Disease", "disease")
-        self.preview_mode_combo.addItem("Healthy Tissue Preview", "healthy_tissue")
-        self.preview_mode_combo.setToolTip(
-            "Candidate disease shows brown/necrotic preview pixels only. "
-            "Healthy tissue preview shows leaf pixels not classified as candidates."
+        self.view_mode_combo = QComboBox(self)
+        for label, key in VIEW_MODE_OPTIONS:
+            self.view_mode_combo.addItem(label, key)
+        self.view_mode_combo.setToolTip(
+            "Display-only preview. Changing View does not calculate or save results."
         )
-        self.preview_mode_combo.setEnabled(False)
-        actions_layout.addWidget(self.preview_mode_combo, alignment=Qt.AlignmentFlag.AlignHCenter)
-
-        self.preview_scope_hint = QLabel(
-            "Disease output is a candidate preview only."
-        )
-        apply_hint_style(self.preview_scope_hint)
-        self.preview_scope_hint.setWordWrap(True)
-        self.preview_scope_hint.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        actions_layout.addWidget(self.preview_scope_hint, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.view_mode_combo.setEnabled(False)
+        actions_layout.addWidget(self.view_mode_combo, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         layout.addWidget(actions_container)
         layout.addStretch(1)
 
         self.set_calibration_controls_enabled(False)
-        self.set_preview_controls_enabled(False)
+        self.set_view_controls_enabled(False)
+        self.set_calculation_controls_enabled(False)
         self.set_calibration_in_progress(False)
         self.show_workspace_state(None)
 
-    def set_preview_controls_enabled(self, enabled: bool) -> None:
-        self.preview_whole_leaf_button.setEnabled(enabled)
-        self.preview_disease_mask_button.setEnabled(enabled)
-        if not enabled:
-            self.preview_mode_combo.setEnabled(False)
+    def set_view_controls_enabled(self, enabled: bool) -> None:
+        self.view_mode_combo.setEnabled(enabled)
 
-    def set_disease_preview_controls_enabled(self, enabled: bool) -> None:
-        self.preview_disease_mask_button.setEnabled(enabled)
+    def set_calculation_controls_enabled(self, enabled: bool) -> None:
+        self.calculate_results_button.setEnabled(enabled)
 
-    def set_preview_mode_enabled(self, enabled: bool) -> None:
-        self.preview_mode_combo.setEnabled(enabled)
-
-    def set_preview_mode_item_enabled(self, mode_key: str, enabled: bool) -> None:
-        index = self.preview_mode_combo.findData(mode_key)
-        if index >= 0:
-            model = self.preview_mode_combo.model()
-            item = model.item(index)
-            if item is not None:
-                item.setEnabled(enabled)
-
-    def get_preview_mode_key(self) -> str:
-        value = self.preview_mode_combo.currentData()
+    def get_view_mode_key(self) -> str:
+        value = self.view_mode_combo.currentData()
         return str(value) if value is not None else "raw_image"
 
-    def set_preview_mode_key(self, mode_key: str) -> None:
-        index = self.preview_mode_combo.findData(mode_key)
+    def set_view_mode_key(self, mode_key: str) -> None:
+        index = self.view_mode_combo.findData(mode_key)
         if index >= 0:
-            self.preview_mode_combo.setCurrentIndex(index)
+            self.view_mode_combo.setCurrentIndex(index)
+
+    def set_calculation_button_state(
+        self,
+        *,
+        label: str,
+        enabled: bool,
+        hint: str | None = None,
+    ) -> None:
+        self.calculate_results_button.setText(label)
+        self.calculate_results_button.setEnabled(enabled)
+        if enabled:
+            self.calculate_results_button.setToolTip(
+                "Explicitly calculate and persist total leaf area and candidate disease metrics."
+            )
+        elif hint:
+            self.calculate_results_button.setToolTip(hint)
+        else:
+            self.calculate_results_button.setToolTip("")
 
     def set_calibration_controls_enabled(self, enabled: bool) -> None:
         self.set_manual_calibration_button.setEnabled(enabled)
@@ -315,76 +335,50 @@ class SampleInspectorPanel(QWidget):
         if self.save_calibration_button.isVisible():
             self.save_calibration_button.setEnabled(enabled)
 
+    def _set_measurement_placeholder(self, text: str) -> None:
+        self.total_leaf_area_label.setText(text)
+        self.candidate_disease_area_label.setText(text)
+        self.candidate_disease_coverage_label.setText(text)
+        self.non_candidate_leaf_area_label.setText(text)
+
+    def _reset_measurement_labels(self) -> None:
+        self._set_measurement_placeholder("Not calculated")
+
     def show_workspace_state(self, workspace: WorkspaceMetadata | None) -> None:
         if workspace is None:
             self.sample_name_label.setText("No workspace open")
         else:
             self.sample_name_label.setText("Select a sample")
         self.condition_group_label.setText("—")
-        self.total_leaf_area_label.setText("Not calculated")
+        self._reset_measurement_labels()
         self.calibration_status_value.setText("—")
-        self.whole_leaf_status_value.setText("—")
-        self.disease_mask_status_value.setText("—")
-        self.preview_mode_combo.setCurrentIndex(0)
-        self.preview_mode_combo.setEnabled(False)
-        for mode_key in ("raw_image", "whole_leaf", "disease", "healthy_tissue"):
-            self.set_preview_mode_item_enabled(mode_key, mode_key == "raw_image")
+        self.result_status_value.setText("—")
+        self.view_mode_combo.setCurrentIndex(0)
+        self.view_mode_combo.setEnabled(False)
         self.warnings_label.hide()
         self.warnings_label.setText("")
         self.set_calibration_controls_enabled(False)
-        self.set_preview_controls_enabled(False)
+        self.set_view_controls_enabled(False)
+        self.set_calculation_controls_enabled(False)
+        self.set_calculation_button_state(label="Calculate Results", enabled=False, hint=None)
         self.set_calibration_in_progress(False)
 
-    def show_whole_leaf_preview_fields(
-        self,
-        *,
-        status: str | None = None,
-        warnings: str | None = None,
-    ) -> None:
-        self.whole_leaf_status_value.setText(
-            _format_whole_leaf_status_value(preview_status=status)
-        )
+    def show_preview_warnings(self, warnings: str | None) -> None:
         if warnings:
             self.warnings_label.setText(warnings)
             self.warnings_label.show()
         else:
             self.warnings_label.hide()
             self.warnings_label.setText("")
-
-    def show_disease_preview_fields(
-        self,
-        *,
-        status: str | None = None,
-        warnings: str | None = None,
-    ) -> None:
-        self.disease_mask_status_value.setText(
-            _format_disease_mask_status_value(preview_status=status)
-        )
-        if warnings:
-            self.warnings_label.setText(warnings)
-            self.warnings_label.show()
-        else:
-            self.warnings_label.hide()
-            self.warnings_label.setText("")
-
-    def show_leaf_mask_preview_fields(
-        self,
-        *,
-        status: str | None = None,
-        warnings: str | None = None,
-    ) -> None:
-        """Backward-compatible alias for whole-leaf preview status updates."""
-        self.show_whole_leaf_preview_fields(status=status, warnings=warnings)
 
     def show_sample(
         self,
         sample: SampleRecord,
         workspace: WorkspaceMetadata,
         *,
-        preview_status: str | None = None,
-        disease_preview_status: str | None = None,
-        preview_succeeded_without_calibration: bool = False,
+        image_available: bool = True,
         warnings: str | None = None,
+        calculation_failed: bool = False,
     ) -> None:
         self.sample_name_label.setText(sample.display_name)
         group = workspace.get_condition_group(sample.condition_group_id)
@@ -395,35 +389,54 @@ class SampleInspectorPanel(QWidget):
         self.calibration_status_value.setText(
             _format_calibration_status_value(sample.calibration_status)
         )
-        self.whole_leaf_status_value.setText(
-            _format_whole_leaf_status_value(preview_status=preview_status)
-        )
-        self.disease_mask_status_value.setText(
-            _format_disease_mask_status_value(preview_status=disease_preview_status)
-        )
-        self.total_leaf_area_label.setText(
-            _format_total_leaf_area_display(
-                sample,
-                preview_status=preview_status,
-                preview_succeeded_without_calibration=preview_succeeded_without_calibration,
-            )
+        self.result_status_value.setText(
+            phase5_result_status_display(sample, calculation_failed=calculation_failed)
         )
 
-        if warnings:
-            self.warnings_label.setText(warnings)
-            self.warnings_label.show()
+        if phase5_result_is_current(sample):
+            measurement = sample.candidate_disease_measurement
+            assert measurement is not None
+            self.total_leaf_area_label.setText(
+                format_area_in2_display(measurement.total_leaf_area_in2)
+            )
+            self.candidate_disease_area_label.setText(
+                format_area_in2_display(measurement.candidate_disease_area_in2)
+            )
+            self.candidate_disease_coverage_label.setText(
+                format_coverage_percent_display(
+                    measurement.candidate_disease_coverage_percent
+                )
+            )
+            self.non_candidate_leaf_area_label.setText(
+                format_area_in2_display(measurement.non_candidate_leaf_area_in2)
+            )
         else:
-            self.warnings_label.hide()
-            self.warnings_label.setText("")
+            placeholder = phase5_measurement_row_placeholder(
+                sample,
+                calculation_failed=calculation_failed,
+            )
+            self._set_measurement_placeholder(placeholder)
+
+        label, enabled, hint = _calculation_button_state(
+            sample,
+            image_available=image_available,
+        )
+        self.set_calculation_button_state(label=label, enabled=enabled, hint=hint)
+        self.show_preview_warnings(warnings)
 
         self.set_calibration_controls_enabled(True)
-        self.set_preview_controls_enabled(True)
+        self.set_view_controls_enabled(True)
         self.set_save_calibration_enabled(False)
 
 
 def build_inspector_panel(parent: QWidget | None = None) -> SampleInspectorPanel:
     """Right-side inspector / contextual settings panel."""
     return SampleInspectorPanel(parent)
+
+
+def sample_image_available(sample: SampleRecord, workspace_root: Path) -> bool:
+    """Return True when the managed source image file exists on disk."""
+    return sample.raw_image_absolute(workspace_root).is_file()
 
 
 def build_main_layout(window: MainWindow) -> None:

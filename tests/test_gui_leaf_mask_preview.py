@@ -1,4 +1,4 @@
-"""Tests for leaf mask preview GUI wiring without a visible window."""
+"""Tests for display-only view mode GUI wiring without a visible window."""
 
 from __future__ import annotations
 
@@ -18,15 +18,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from neopest.calibration import build_one_inch_manual_calibration_record
 from neopest.gui import MainWindow
 from neopest.metadata import WORKSPACE_JSON_FILENAME
-from neopest.project_manager import (
-    WorkspaceError,
-    import_images,
-    initialize_workspace,
-    save_sample_calibration,
-)
+from neopest.project_manager import WorkspaceError, import_images, initialize_workspace
 from tests.test_segmentation import _make_synthetic_leaf_image
 
 
@@ -43,16 +37,16 @@ def _main_window_without_startup_default() -> MainWindow:
             return MainWindow()
 
 
-class TestGuiLeafMaskPreview(unittest.TestCase):
+class TestGuiViewMode(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         _ensure_qt_app()
 
-    def test_preview_button_disabled_without_sample(self) -> None:
+    def test_view_dropdown_disabled_without_sample(self) -> None:
         window = _main_window_without_startup_default()
-        self.assertFalse(window.inspector_panel.preview_whole_leaf_button.isEnabled())
+        self.assertFalse(window.inspector_panel.view_mode_combo.isEnabled())
 
-    def test_preview_button_enabled_for_sample_with_image(self) -> None:
+    def test_view_dropdown_enabled_for_sample_with_image(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp) / "ws"
             workspace = initialize_workspace(root, display_name="Preview Test")
@@ -66,9 +60,9 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             window._set_workspace(workspace)
             window._on_sample_selected(imported[0].sample_id)
 
-            self.assertTrue(window.inspector_panel.preview_whole_leaf_button.isEnabled())
+            self.assertTrue(window.inspector_panel.view_mode_combo.isEnabled())
 
-    def test_preview_leaf_mask_updates_inspector_and_overlay(self) -> None:
+    def test_view_whole_leaf_updates_overlay(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp) / "ws"
             workspace = initialize_workspace(root, display_name="Preview Overlay")
@@ -80,21 +74,15 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(imported[0].sample_id)
-            window._on_preview_whole_leaf()
+            window.inspector_panel.set_view_mode_key("whole_leaf")
+            window._on_view_mode_changed()
 
-            self.assertIn(
-                imported[0].sample_id,
-                window._leaf_mask_previews,
-            )
+            self.assertIn(imported[0].sample_id, window._leaf_mask_previews)
             preview = window._leaf_mask_previews[imported[0].sample_id]
             self.assertEqual(preview.status.value, "success")
             self.assertIsNotNone(window.image_canvas._leaf_mask_overlay)
-            self.assertIn(
-                "Ready",
-                window.inspector_panel.whole_leaf_status_value.text(),
-            )
 
-    def test_preview_does_not_change_sample_analysis_status(self) -> None:
+    def test_view_does_not_change_sample_analysis_status(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp) / "ws"
             workspace = initialize_workspace(root, display_name="Status Test")
@@ -108,13 +96,14 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(imported[0].sample_id)
-            window._on_preview_whole_leaf()
+            window.inspector_panel.set_view_mode_key("whole_leaf")
+            window._on_view_mode_changed()
 
             sample = workspace.get_sample(imported[0].sample_id)
             assert sample is not None
             self.assertEqual(sample.analysis_status.value, "not_run")
 
-    def test_preview_failure_does_not_change_sample_analysis_status(self) -> None:
+    def test_view_failure_does_not_change_sample_analysis_status(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp) / "ws"
             workspace = initialize_workspace(root, display_name="Failure Status")
@@ -128,15 +117,12 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(imported[0].sample_id)
-            window._on_preview_whole_leaf()
+            window.inspector_panel.set_view_mode_key("whole_leaf")
+            window._on_view_mode_changed()
 
             sample = workspace.get_sample(imported[0].sample_id)
             assert sample is not None
             self.assertEqual(sample.analysis_status.value, "not_run")
-            self.assertIn(
-                "Failed",
-                window.inspector_panel.whole_leaf_status_value.text(),
-            )
 
     def test_switching_samples_clears_stale_overlay(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -158,15 +144,12 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(sample_a.sample_id)
-            window._on_preview_whole_leaf()
+            window.inspector_panel.set_view_mode_key("whole_leaf")
+            window._on_view_mode_changed()
             self.assertIsNotNone(window.image_canvas._leaf_mask_overlay)
 
             window._on_sample_selected(sample_b.sample_id)
             self.assertIsNone(window.image_canvas._leaf_mask_overlay)
-            self.assertIn(
-                "Not previewed",
-                window.inspector_panel.whole_leaf_status_value.text(),
-            )
 
     def test_workspace_switch_clears_preview_cache(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -183,7 +166,8 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace_a)
             window._on_sample_selected(imported[0].sample_id)
-            window._on_preview_whole_leaf()
+            window.inspector_panel.set_view_mode_key("whole_leaf")
+            window._on_view_mode_changed()
             self.assertIn(imported[0].sample_id, window._leaf_mask_previews)
 
             workspace_b = initialize_workspace(root_b, display_name="Workspace B")
@@ -191,7 +175,7 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             self.assertEqual(window._leaf_mask_previews, {})
             self.assertIsNone(window.image_canvas._leaf_mask_overlay)
 
-    def test_uncalibrated_preview_does_not_persist_measurement(self) -> None:
+    def test_view_does_not_persist_measurement(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp) / "ws"
             workspace = initialize_workspace(root, display_name="Persistence")
@@ -207,35 +191,12 @@ class TestGuiLeafMaskPreview(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(imported[0].sample_id)
-            window._on_preview_whole_leaf()
+            window.inspector_panel.set_view_mode_key("whole_leaf")
+            window._on_view_mode_changed()
 
             after = json.loads(metadata_path.read_text(encoding="utf-8"))
             self.assertEqual(before, after)
             self.assertNotIn("leaf_mask", json.dumps(after))
-
-    def test_calibrated_preview_persists_leaf_measurement(self) -> None:
-        with TemporaryDirectory() as tmp:
-            root = Path(tmp) / "ws"
-            workspace = initialize_workspace(root, display_name="Persist Cal")
-            image_path = Path(tmp) / "leaf.png"
-            cv2.imwrite(
-                str(image_path),
-                cv2.cvtColor(_make_synthetic_leaf_image(), cv2.COLOR_RGB2BGR),
-            )
-            imported = import_images(workspace, [image_path])
-            calibration = build_one_inch_manual_calibration_record((0.0, 0.0), (50.0, 0.0))
-            save_sample_calibration(workspace, imported[0].sample_id, calibration)
-
-            window = _main_window_without_startup_default()
-            window._set_workspace(workspace)
-            window._on_sample_selected(imported[0].sample_id)
-            window._on_preview_whole_leaf()
-
-            payload = json.loads((root / WORKSPACE_JSON_FILENAME).read_text())
-            measurement = payload["samples"][0].get("leaf_measurement")
-            self.assertIsNotNone(measurement)
-            self.assertEqual(measurement["status"], "valid")
-            self.assertIsInstance(measurement["leaf_area_in2"], float)
 
     def test_gui_layout_builders_do_not_import_segmentation(self) -> None:
         import neopest.gui_layout_builders as layout_builders

@@ -56,6 +56,13 @@ def repair_legacy_inherited_sample_dict(sample_data: dict[str, Any]) -> dict[str
         stale_measurement["stale_reason"] = LEGACY_INHERITED_CALIBRATION_REMOVED_REASON
         repaired["leaf_measurement"] = stale_measurement
 
+    candidate_measurement = repaired.get("candidate_disease_measurement")
+    if isinstance(candidate_measurement, dict) and str(candidate_measurement.get("status")) == "valid":
+        stale_candidate = dict(candidate_measurement)
+        stale_candidate["status"] = "stale"
+        stale_candidate["stale_reason"] = LEGACY_INHERITED_CALIBRATION_REMOVED_REASON
+        repaired["candidate_disease_measurement"] = stale_candidate
+
     return repaired
 
 

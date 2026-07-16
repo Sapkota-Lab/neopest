@@ -13,6 +13,7 @@ from neopest.metadata import (
     DEFAULT_CONDITION_GROUP_NAME,
     WORKSPACE_JSON_FILENAME,
     CalibrationRecord,
+    CandidateDiseaseMeasurementRecord,
     ConditionGroupRecord,
     LeafMeasurementRecord,
     SampleRecord,
@@ -240,9 +241,33 @@ def mark_sample_leaf_measurement_stale(sample: SampleRecord, reason: str) -> Non
         sample.leaf_measurement = sample.leaf_measurement.mark_stale(reason)
 
 
+def mark_sample_candidate_disease_measurement_stale(
+    sample: SampleRecord,
+    reason: str,
+) -> None:
+    """Mark a persisted candidate-disease result stale when scientific inputs change."""
+    if sample.candidate_disease_measurement is None:
+        return
+    if sample.candidate_disease_measurement.status == "valid":
+        sample.candidate_disease_measurement = (
+            sample.candidate_disease_measurement.mark_stale(reason)
+        )
+
+
+def mark_sample_measurements_stale(sample: SampleRecord, reason: str) -> None:
+    """Mark all persisted scientific measurements stale for one sample."""
+    mark_sample_leaf_measurement_stale(sample, reason)
+    mark_sample_candidate_disease_measurement_stale(sample, reason)
+
+
 def clear_sample_leaf_measurement(sample: SampleRecord) -> None:
     """Remove a persisted leaf measurement from a sample."""
     sample.leaf_measurement = None
+
+
+def clear_sample_candidate_disease_measurement(sample: SampleRecord) -> None:
+    """Remove a persisted candidate-disease measurement from a sample."""
+    sample.candidate_disease_measurement = None
 
 
 def save_sample_leaf_measurement(
@@ -260,6 +285,36 @@ def save_sample_leaf_measurement(
     sample.leaf_measurement = measurement
     if save:
         save_workspace(workspace)
+    return sample
+
+
+def save_sample_calculation_results(
+    workspace: WorkspaceMetadata,
+    sample_id: str,
+    leaf_measurement: LeafMeasurementRecord,
+    candidate_disease_measurement: CandidateDiseaseMeasurementRecord,
+    *,
+    save: bool = True,
+) -> SampleRecord:
+    """Persist leaf and candidate-disease results from one coherent calculation run."""
+    sample = workspace.get_sample(sample_id)
+    if sample is None:
+        raise WorkspaceError(f"Unknown sample: {sample_id}")
+
+    previous_leaf = sample.leaf_measurement
+    previous_candidate = sample.candidate_disease_measurement
+    sample.leaf_measurement = leaf_measurement
+    sample.candidate_disease_measurement = candidate_disease_measurement
+
+    if not save:
+        return sample
+
+    try:
+        save_workspace(workspace)
+    except OSError:
+        sample.leaf_measurement = previous_leaf
+        sample.candidate_disease_measurement = previous_candidate
+        raise
     return sample
 
 
@@ -472,7 +527,7 @@ def save_sample_calibration(
     if sample is None:
         raise WorkspaceError(f"Unknown sample: {sample_id}")
 
-    mark_sample_leaf_measurement_stale(sample, "calibration_changed")
+    mark_sample_measurements_stale(sample, "calibration_changed")
     sample.calibration = calibration
     sample.calibration_status = CalibrationStatus.MANUAL
     # Phase 3C: calibration save does not run final analysis. Preserve analysis_status

@@ -1,4 +1,4 @@
-"""Tests for disease mask preview GUI wiring without a visible window."""
+"""Tests for display-only disease view mode GUI wiring without a visible window."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def _main_window_without_startup_default() -> MainWindow:
             return MainWindow()
 
 
-class TestGuiDiseaseMaskPreview(unittest.TestCase):
+class TestGuiDiseaseViewMode(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         _ensure_qt_app()
@@ -65,62 +65,61 @@ class TestGuiDiseaseMaskPreview(unittest.TestCase):
         imported = import_images(workspace, [image_path])
         return root, workspace, imported[0].sample_id
 
-    def test_disease_preview_button_disabled_without_sample(self) -> None:
-        window = _main_window_without_startup_default()
-        self.assertFalse(window.inspector_panel.preview_disease_mask_button.isEnabled())
-
-    def test_disease_preview_button_enabled_for_sample_with_image(self) -> None:
+    def test_view_dropdown_enabled_for_sample_with_image(self) -> None:
         _, workspace, sample_id = self._workspace_with_sample()
         window = _main_window_without_startup_default()
         window._set_workspace(workspace)
         window._on_sample_selected(sample_id)
-        self.assertTrue(window.inspector_panel.preview_disease_mask_button.isEnabled())
+        self.assertTrue(window.inspector_panel.view_mode_combo.isEnabled())
 
-    def test_disease_preview_generates_whole_leaf_when_absent(self) -> None:
+    def test_disease_view_generates_whole_leaf_when_absent(self) -> None:
         _, workspace, sample_id = self._workspace_with_sample()
         window = _main_window_without_startup_default()
         window._set_workspace(workspace)
         window._on_sample_selected(sample_id)
-        window._on_preview_disease_mask()
+        window.inspector_panel.set_view_mode_key("disease")
+        window._on_view_mode_changed()
 
         self.assertIn(sample_id, window._leaf_mask_previews)
         self.assertIn(sample_id, window._disease_mask_previews)
         disease = window._disease_mask_previews[sample_id]
         self.assertEqual(disease.status, DiseaseMaskPreviewStatus.READY)
 
-    def test_disease_preview_reuses_existing_whole_leaf_preview(self) -> None:
+    def test_disease_view_reuses_existing_whole_leaf_preview(self) -> None:
         _, workspace, sample_id = self._workspace_with_sample()
         window = _main_window_without_startup_default()
         window._set_workspace(workspace)
         window._on_sample_selected(sample_id)
-        window._on_preview_whole_leaf()
+        window.inspector_panel.set_view_mode_key("whole_leaf")
+        window._on_view_mode_changed()
         leaf_before = window._leaf_mask_previews[sample_id]
-        window._on_preview_disease_mask()
+        window.inspector_panel.set_view_mode_key("disease")
+        window._on_view_mode_changed()
         leaf_after = window._leaf_mask_previews[sample_id]
         self.assertIs(leaf_before, leaf_after)
 
-    def test_disease_preview_updates_inspector_and_overlay(self) -> None:
+    def test_disease_view_updates_overlay(self) -> None:
         _, workspace, sample_id = self._workspace_with_sample()
         window = _main_window_without_startup_default()
         window._set_workspace(workspace)
         window._on_sample_selected(sample_id)
-        window._on_preview_disease_mask()
-
-        self.assertIn("Preview ready", window.inspector_panel.disease_mask_status_value.text())
+        window.inspector_panel.set_view_mode_key("disease")
+        window._on_view_mode_changed()
         self.assertIsNotNone(window.image_canvas._leaf_mask_overlay)
 
-    def test_disease_preview_does_not_change_analysis_status(self) -> None:
+    def test_disease_view_does_not_change_analysis_status(self) -> None:
         _, workspace, sample_id = self._workspace_with_sample()
         window = _main_window_without_startup_default()
         window._set_workspace(workspace)
         window._on_sample_selected(sample_id)
-        window._on_preview_disease_mask()
+        window.inspector_panel.set_view_mode_key("disease")
+        window._on_view_mode_changed()
 
         sample = workspace.get_sample(sample_id)
         assert sample is not None
         self.assertEqual(sample.analysis_status.value, "not_run")
 
-    def test_disease_preview_does_not_persist_to_workspace_json(self) -> None:
+    def test_disease_view_does_not_persist_to_workspace_json(self) -> None:
         root, workspace, sample_id = self._workspace_with_sample()
         metadata_path = root / WORKSPACE_JSON_FILENAME
         before = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -128,13 +127,14 @@ class TestGuiDiseaseMaskPreview(unittest.TestCase):
         window = _main_window_without_startup_default()
         window._set_workspace(workspace)
         window._on_sample_selected(sample_id)
-        window._on_preview_disease_mask()
+        window.inspector_panel.set_view_mode_key("disease")
+        window._on_view_mode_changed()
 
         after = json.loads(metadata_path.read_text(encoding="utf-8"))
         self.assertEqual(before, after)
         self.assertNotIn("disease_mask", json.dumps(after))
 
-    def test_disease_preview_does_not_change_total_leaf_area(self) -> None:
+    def test_disease_view_does_not_change_persisted_leaf_measurement(self) -> None:
         root, workspace, sample_id = self._workspace_with_sample()
         calibration = build_one_inch_manual_calibration_record((0.0, 0.0), (50.0, 0.0))
         save_sample_calibration(workspace, sample_id, calibration)
@@ -152,7 +152,8 @@ class TestGuiDiseaseMaskPreview(unittest.TestCase):
         window = _main_window_without_startup_default()
         window._set_workspace(workspace)
         window._on_sample_selected(sample_id)
-        window._on_preview_disease_mask()
+        window.inspector_panel.set_view_mode_key("disease")
+        window._on_view_mode_changed()
 
         after_bytes = (root / WORKSPACE_JSON_FILENAME).read_bytes()
         self.assertEqual(before_bytes, after_bytes)
@@ -177,75 +178,14 @@ class TestGuiDiseaseMaskPreview(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(sample_a.sample_id)
-            window._on_preview_disease_mask()
+            window.inspector_panel.set_view_mode_key("disease")
+            window._on_view_mode_changed()
             self.assertIsNotNone(window.image_canvas._leaf_mask_overlay)
 
             window._on_sample_selected(sample_b.sample_id)
             self.assertIsNone(window.image_canvas._leaf_mask_overlay)
-            self.assertIn(
-                "Not previewed",
-                window.inspector_panel.disease_mask_status_value.text(),
-            )
 
-    def test_workspace_switch_clears_disease_cache(self) -> None:
-        _, workspace_a, sample_id = self._workspace_with_sample()
-        window = _main_window_without_startup_default()
-        window._set_workspace(workspace_a)
-        window._on_sample_selected(sample_id)
-        window._on_preview_disease_mask()
-        self.assertIn(sample_id, window._disease_mask_previews)
-
-        with TemporaryDirectory() as tmp:
-            root_b = Path(tmp) / "ws_b"
-            workspace_b = initialize_workspace(root_b, display_name="Workspace B")
-            window._set_workspace(workspace_b)
-            self.assertEqual(window._disease_mask_previews, {})
-            self.assertIsNone(window.image_canvas._leaf_mask_overlay)
-
-    def test_regenerating_whole_leaf_invalidates_disease_preview(self) -> None:
-        _, workspace, sample_id = self._workspace_with_sample()
-        window = _main_window_without_startup_default()
-        window._set_workspace(workspace)
-        window._on_sample_selected(sample_id)
-        window._on_preview_disease_mask()
-        self.assertIn(sample_id, window._disease_mask_previews)
-
-        window._on_preview_whole_leaf()
-        self.assertNotIn(sample_id, window._disease_mask_previews)
-
-    def test_preview_mode_raw_image_clears_overlay(self) -> None:
-        _, workspace, sample_id = self._workspace_with_sample()
-        window = _main_window_without_startup_default()
-        window._set_workspace(workspace)
-        window._on_sample_selected(sample_id)
-        window._on_preview_disease_mask()
-        self.assertIsNotNone(window.image_canvas._leaf_mask_overlay)
-
-        window.inspector_panel.set_preview_mode_key("raw_image")
-        window._on_preview_mode_changed()
-        self.assertIsNone(window.image_canvas._leaf_mask_overlay)
-
-    def test_preview_mode_whole_leaf_shows_leaf_overlay(self) -> None:
-        _, workspace, sample_id = self._workspace_with_sample()
-        window = _main_window_without_startup_default()
-        window._set_workspace(workspace)
-        window._on_sample_selected(sample_id)
-        window._on_preview_whole_leaf()
-        window.inspector_panel.set_preview_mode_key("whole_leaf")
-        window._on_preview_mode_changed()
-        self.assertIsNotNone(window.image_canvas._leaf_mask_overlay)
-
-    def test_preview_mode_healthy_tissue_shows_overlay(self) -> None:
-        _, workspace, sample_id = self._workspace_with_sample()
-        window = _main_window_without_startup_default()
-        window._set_workspace(workspace)
-        window._on_sample_selected(sample_id)
-        window._on_preview_disease_mask()
-        window.inspector_panel.set_preview_mode_key("healthy_tissue")
-        window._on_preview_mode_changed()
-        self.assertIsNotNone(window.image_canvas._leaf_mask_overlay)
-
-    def test_disease_preview_fails_when_whole_leaf_unavailable(self) -> None:
+    def test_disease_view_failure_shows_warning(self) -> None:
         _, workspace, sample_id = self._workspace_with_sample()
         window = _main_window_without_startup_default()
         window._set_workspace(workspace)
@@ -258,7 +198,8 @@ class TestGuiDiseaseMaskPreview(unittest.TestCase):
                 warnings=["Synthetic leaf failure."],
             ),
         ):
-            window._on_preview_disease_mask()
+            window.inspector_panel.set_view_mode_key("disease")
+            window._on_view_mode_changed()
         disease = window._disease_mask_previews[sample_id]
         self.assertEqual(disease.status, DiseaseMaskPreviewStatus.FAILED)
         self.assertIn(
@@ -266,14 +207,13 @@ class TestGuiDiseaseMaskPreview(unittest.TestCase):
             window.inspector_panel.warnings_label.text(),
         )
 
-    def test_preview_mode_disease_shows_overlay_after_preview(self) -> None:
+    def test_view_mode_disease_shows_overlay_after_preview(self) -> None:
         _, workspace, sample_id = self._workspace_with_sample()
         window = _main_window_without_startup_default()
         window._set_workspace(workspace)
         window._on_sample_selected(sample_id)
-        window._on_preview_disease_mask()
-        window.inspector_panel.set_preview_mode_key("disease")
-        window._on_preview_mode_changed()
+        window.inspector_panel.set_view_mode_key("disease")
+        window._on_view_mode_changed()
         self.assertIsNotNone(window.image_canvas._leaf_mask_overlay)
 
     def test_calibration_line_draws_above_overlay(self) -> None:
@@ -290,7 +230,7 @@ class TestGuiDiseaseMaskPreview(unittest.TestCase):
         self.assertFalse(window.run_analysis_button.isVisible())
 
 
-class TestDiseasePreviewLeafMeasurementNonPersistence(unittest.TestCase):
+class TestDiseaseViewLeafMeasurementNonPersistence(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         _ensure_qt_app()
@@ -316,34 +256,36 @@ class TestDiseasePreviewLeafMeasurementNonPersistence(unittest.TestCase):
             save_sample_leaf_measurement(workspace, sample_id, leaf_measurement)
         return root, workspace, sample_id, tmp
 
-    def test_disease_preview_generates_transient_whole_leaf_mask(self) -> None:
+    def test_disease_view_generates_transient_whole_leaf_mask(self) -> None:
         root, workspace, sample_id, tmp = self._workspace_with_calibrated_sample()
         try:
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(sample_id)
             self.assertNotIn(sample_id, window._leaf_mask_previews)
-            window._on_preview_disease_mask()
+            window.inspector_panel.set_view_mode_key("disease")
+            window._on_view_mode_changed()
             preview = window._leaf_mask_previews[sample_id]
             self.assertEqual(preview.status, LeafMaskPreviewStatus.SUCCESS)
             self.assertIsNotNone(preview.mask)
         finally:
             tmp.cleanup()
 
-    def test_disease_preview_does_not_create_leaf_measurement(self) -> None:
+    def test_disease_view_does_not_create_leaf_measurement(self) -> None:
         root, workspace, sample_id, tmp = self._workspace_with_calibrated_sample()
         try:
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(sample_id)
-            window._on_preview_disease_mask()
+            window.inspector_panel.set_view_mode_key("disease")
+            window._on_view_mode_changed()
             sample = workspace.get_sample(sample_id)
             assert sample is not None
             self.assertIsNone(sample.leaf_measurement)
         finally:
             tmp.cleanup()
 
-    def test_disease_preview_does_not_refresh_stale_leaf_measurement(self) -> None:
+    def test_disease_view_does_not_refresh_stale_leaf_measurement(self) -> None:
         stale = LeafMeasurementRecord(
             status="stale",
             leaf_area_pixels=1000,
@@ -365,7 +307,8 @@ class TestDiseasePreviewLeafMeasurementNonPersistence(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(sample_id)
-            window._on_preview_disease_mask()
+            window.inspector_panel.set_view_mode_key("disease")
+            window._on_view_mode_changed()
             after = json.loads((root / WORKSPACE_JSON_FILENAME).read_text())["samples"][0][
                 "leaf_measurement"
             ]
@@ -374,7 +317,7 @@ class TestDiseasePreviewLeafMeasurementNonPersistence(unittest.TestCase):
         finally:
             tmp.cleanup()
 
-    def test_disease_preview_does_not_modify_valid_leaf_measurement(self) -> None:
+    def test_disease_view_does_not_modify_valid_leaf_measurement(self) -> None:
         preview = segment_leaf_preview(_make_synthetic_leaf_image())
         assert preview.mask is not None
         calibration = build_one_inch_manual_calibration_record((0.0, 0.0), (50.0, 0.0))
@@ -394,7 +337,8 @@ class TestDiseasePreviewLeafMeasurementNonPersistence(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(sample_id)
-            window._on_preview_disease_mask()
+            window.inspector_panel.set_view_mode_key("disease")
+            window._on_view_mode_changed()
             after = json.loads((root / WORKSPACE_JSON_FILENAME).read_text())["samples"][0][
                 "leaf_measurement"
             ]
@@ -403,21 +347,22 @@ class TestDiseasePreviewLeafMeasurementNonPersistence(unittest.TestCase):
         finally:
             tmp.cleanup()
 
-    def test_disease_preview_does_not_call_workspace_persistence(self) -> None:
+    def test_disease_view_does_not_call_workspace_persistence(self) -> None:
         root, workspace, sample_id, tmp = self._workspace_with_calibrated_sample()
         try:
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(sample_id)
-            with patch("neopest.gui.save_sample_leaf_measurement") as save_measurement:
+            with patch("neopest.gui.save_sample_calculation_results") as save_results:
                 with patch("neopest.project_manager.save_workspace") as save_workspace:
-                    window._on_preview_disease_mask()
-            save_measurement.assert_not_called()
+                    window.inspector_panel.set_view_mode_key("disease")
+                    window._on_view_mode_changed()
+            save_results.assert_not_called()
             save_workspace.assert_not_called()
         finally:
             tmp.cleanup()
 
-    def test_workspace_json_byte_for_byte_unchanged_after_disease_preview(self) -> None:
+    def test_workspace_json_byte_for_byte_unchanged_after_disease_view(self) -> None:
         root, workspace, sample_id, tmp = self._workspace_with_calibrated_sample(
             leaf_measurement=LeafMeasurementRecord(
                 status="stale",
@@ -431,13 +376,14 @@ class TestDiseasePreviewLeafMeasurementNonPersistence(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(sample_id)
-            window._on_preview_disease_mask()
+            window.inspector_panel.set_view_mode_key("disease")
+            window._on_view_mode_changed()
             after_bytes = metadata_path.read_bytes()
             self.assertEqual(before_bytes, after_bytes)
         finally:
             tmp.cleanup()
 
-    def test_healthy_tissue_preview_mode_does_not_persist_measurements(self) -> None:
+    def test_healthy_tissue_view_mode_does_not_persist_measurements(self) -> None:
         root, workspace, sample_id, tmp = self._workspace_with_calibrated_sample()
         try:
             metadata_path = root / WORKSPACE_JSON_FILENAME
@@ -445,29 +391,27 @@ class TestDiseasePreviewLeafMeasurementNonPersistence(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(sample_id)
-            window._on_preview_disease_mask()
-            window.inspector_panel.set_preview_mode_key("healthy_tissue")
-            window._on_preview_mode_changed()
+            window.inspector_panel.set_view_mode_key("healthy_tissue")
+            window._on_view_mode_changed()
             after_bytes = metadata_path.read_bytes()
             self.assertEqual(before_bytes, after_bytes)
             self.assertIsNotNone(window.image_canvas._leaf_mask_overlay)
         finally:
             tmp.cleanup()
 
-    def test_explicit_whole_leaf_preview_still_persists_measurement(self) -> None:
+    def test_view_does_not_persist_measurements(self) -> None:
         root, workspace, sample_id, tmp = self._workspace_with_calibrated_sample()
         try:
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(sample_id)
-            window._on_preview_whole_leaf()
+            window.inspector_panel.set_view_mode_key("whole_leaf")
+            window._on_view_mode_changed()
             sample = workspace.get_sample(sample_id)
             assert sample is not None
-            self.assertIsNotNone(sample.leaf_measurement)
-            assert sample.leaf_measurement is not None
-            self.assertEqual(sample.leaf_measurement.status, "valid")
+            self.assertIsNone(sample.leaf_measurement)
             payload = json.loads((root / WORKSPACE_JSON_FILENAME).read_text())
-            self.assertIsNotNone(payload["samples"][0]["leaf_measurement"])
+            self.assertIsNone(payload["samples"][0]["leaf_measurement"])
         finally:
             tmp.cleanup()
 
@@ -477,7 +421,8 @@ class TestDiseasePreviewLeafMeasurementNonPersistence(unittest.TestCase):
             window = _main_window_without_startup_default()
             window._set_workspace(workspace)
             window._on_sample_selected(sample_id)
-            window._on_preview_disease_mask()
+            window.inspector_panel.set_view_mode_key("disease")
+            window._on_view_mode_changed()
             disease = window._disease_mask_previews[sample_id]
             self.assertEqual(disease.status, DiseaseMaskPreviewStatus.READY)
             self.assertNotIn("disease_mask", (root / WORKSPACE_JSON_FILENAME).read_text())

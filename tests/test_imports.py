@@ -9,12 +9,13 @@ class TestImports(unittest.TestCase):
     def test_package_import(self) -> None:
         import neopest
 
-        self.assertEqual(neopest.__version__, "0.4.0")
+        self.assertEqual(neopest.__version__, "0.5.0")
 
     def test_core_modules_import(self) -> None:
         modules = [
             "neopest.analysis",
             "neopest.app",
+            "neopest.calculation",
             "neopest.calibration",
             "neopest.desktop_services",
             "neopest.disease_segmentation",

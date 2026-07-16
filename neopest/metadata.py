@@ -19,6 +19,8 @@ DISTANCE_UNIT_CM = "cm"
 DISTANCE_UNIT_IN = "in"
 SUPPORTED_DISTANCE_UNITS = (DISTANCE_UNIT_MM, DISTANCE_UNIT_CM, DISTANCE_UNIT_IN)
 MM_PER_INCH = 25.4
+MM2_PER_IN2 = 645.16
+CALCULATION_METHOD_EXPLICIT_V1 = "explicit_leaf_and_candidate_disease_v1"
 
 
 def _utc_now_iso() -> str:
@@ -215,6 +217,121 @@ class LeafMeasurementRecord:
 
 
 @dataclass
+class CandidateDiseaseMeasurementRecord:
+    """Persisted explicit leaf and candidate-disease measurement with provenance."""
+
+    status: str
+    total_leaf_pixels: int | None = None
+    candidate_disease_pixels: int | None = None
+    total_leaf_area_mm2: float | None = None
+    total_leaf_area_in2: float | None = None
+    candidate_disease_area_mm2: float | None = None
+    candidate_disease_area_in2: float | None = None
+    candidate_disease_coverage_percent: float | None = None
+    non_candidate_leaf_area_mm2: float | None = None
+    non_candidate_leaf_area_in2: float | None = None
+    pixels_per_mm_used: float | None = None
+    source_image_hash: str | None = None
+    leaf_mask_method: str | None = None
+    leaf_mask_settings_version: int | None = None
+    disease_mask_method: str | None = None
+    disease_mask_settings_version: int | None = None
+    calculation_method: str | None = None
+    calculated_at: str | None = None
+    stale_reason: str | None = None
+
+    def mark_stale(self, reason: str) -> CandidateDiseaseMeasurementRecord:
+        """Return a copy marked stale while preserving prior numeric values."""
+        return CandidateDiseaseMeasurementRecord(
+            status="stale",
+            total_leaf_pixels=self.total_leaf_pixels,
+            candidate_disease_pixels=self.candidate_disease_pixels,
+            total_leaf_area_mm2=self.total_leaf_area_mm2,
+            total_leaf_area_in2=self.total_leaf_area_in2,
+            candidate_disease_area_mm2=self.candidate_disease_area_mm2,
+            candidate_disease_area_in2=self.candidate_disease_area_in2,
+            candidate_disease_coverage_percent=self.candidate_disease_coverage_percent,
+            non_candidate_leaf_area_mm2=self.non_candidate_leaf_area_mm2,
+            non_candidate_leaf_area_in2=self.non_candidate_leaf_area_in2,
+            pixels_per_mm_used=self.pixels_per_mm_used,
+            source_image_hash=self.source_image_hash,
+            leaf_mask_method=self.leaf_mask_method,
+            leaf_mask_settings_version=self.leaf_mask_settings_version,
+            disease_mask_method=self.disease_mask_method,
+            disease_mask_settings_version=self.disease_mask_settings_version,
+            calculation_method=self.calculation_method,
+            calculated_at=self.calculated_at,
+            stale_reason=reason,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"status": self.status}
+        if self.total_leaf_pixels is not None:
+            payload["total_leaf_pixels"] = self.total_leaf_pixels
+        if self.candidate_disease_pixels is not None:
+            payload["candidate_disease_pixels"] = self.candidate_disease_pixels
+        if self.total_leaf_area_mm2 is not None:
+            payload["total_leaf_area_mm2"] = self.total_leaf_area_mm2
+        if self.total_leaf_area_in2 is not None:
+            payload["total_leaf_area_in2"] = self.total_leaf_area_in2
+        if self.candidate_disease_area_mm2 is not None:
+            payload["candidate_disease_area_mm2"] = self.candidate_disease_area_mm2
+        if self.candidate_disease_area_in2 is not None:
+            payload["candidate_disease_area_in2"] = self.candidate_disease_area_in2
+        if self.candidate_disease_coverage_percent is not None:
+            payload["candidate_disease_coverage_percent"] = (
+                self.candidate_disease_coverage_percent
+            )
+        if self.non_candidate_leaf_area_mm2 is not None:
+            payload["non_candidate_leaf_area_mm2"] = self.non_candidate_leaf_area_mm2
+        if self.non_candidate_leaf_area_in2 is not None:
+            payload["non_candidate_leaf_area_in2"] = self.non_candidate_leaf_area_in2
+        if self.pixels_per_mm_used is not None:
+            payload["pixels_per_mm_used"] = self.pixels_per_mm_used
+        if self.source_image_hash is not None:
+            payload["source_image_hash"] = self.source_image_hash
+        if self.leaf_mask_method is not None:
+            payload["leaf_mask_method"] = self.leaf_mask_method
+        if self.leaf_mask_settings_version is not None:
+            payload["leaf_mask_settings_version"] = self.leaf_mask_settings_version
+        if self.disease_mask_method is not None:
+            payload["disease_mask_method"] = self.disease_mask_method
+        if self.disease_mask_settings_version is not None:
+            payload["disease_mask_settings_version"] = self.disease_mask_settings_version
+        if self.calculation_method is not None:
+            payload["calculation_method"] = self.calculation_method
+        if self.calculated_at is not None:
+            payload["calculated_at"] = self.calculated_at
+        if self.stale_reason is not None:
+            payload["stale_reason"] = self.stale_reason
+        return payload
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CandidateDiseaseMeasurementRecord:
+        return cls(
+            status=str(data["status"]),
+            total_leaf_pixels=data.get("total_leaf_pixels"),
+            candidate_disease_pixels=data.get("candidate_disease_pixels"),
+            total_leaf_area_mm2=data.get("total_leaf_area_mm2"),
+            total_leaf_area_in2=data.get("total_leaf_area_in2"),
+            candidate_disease_area_mm2=data.get("candidate_disease_area_mm2"),
+            candidate_disease_area_in2=data.get("candidate_disease_area_in2"),
+            candidate_disease_coverage_percent=data.get("candidate_disease_coverage_percent"),
+            non_candidate_leaf_area_mm2=data.get("non_candidate_leaf_area_mm2"),
+            non_candidate_leaf_area_in2=data.get("non_candidate_leaf_area_in2"),
+            pixels_per_mm_used=data.get("pixels_per_mm_used"),
+            source_image_hash=data.get("source_image_hash"),
+            leaf_mask_method=data.get("leaf_mask_method"),
+            leaf_mask_settings_version=data.get("leaf_mask_settings_version"),
+            disease_mask_method=data.get("disease_mask_method"),
+            disease_mask_settings_version=data.get("disease_mask_settings_version"),
+            calculation_method=data.get("calculation_method"),
+            calculated_at=data.get("calculated_at"),
+            stale_reason=data.get("stale_reason"),
+        )
+
+
+@dataclass
 class SampleRecord:
     """One imported still image representing a single leaf observation.
 
@@ -237,6 +354,7 @@ class SampleRecord:
     analysis_status: AnalysisStatus = AnalysisStatus.NOT_RUN
     calibration: CalibrationRecord | None = None
     leaf_measurement: LeafMeasurementRecord | None = None
+    candidate_disease_measurement: CandidateDiseaseMeasurementRecord | None = None
 
     @classmethod
     def create(
@@ -287,6 +405,11 @@ class SampleRecord:
                 if self.leaf_measurement is not None
                 else None
             ),
+            "candidate_disease_measurement": (
+                self.candidate_disease_measurement.to_dict()
+                if self.candidate_disease_measurement is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -320,6 +443,13 @@ class SampleRecord:
             leaf_measurement=(
                 LeafMeasurementRecord.from_dict(data["leaf_measurement"])
                 if data.get("leaf_measurement")
+                else None
+            ),
+            candidate_disease_measurement=(
+                CandidateDiseaseMeasurementRecord.from_dict(
+                    data["candidate_disease_measurement"]
+                )
+                if data.get("candidate_disease_measurement")
                 else None
             ),
         )

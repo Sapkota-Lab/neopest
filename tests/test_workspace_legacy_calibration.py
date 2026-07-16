@@ -199,7 +199,7 @@ class TestLegacyInheritedCalibrationRepair(unittest.TestCase):
             self.assertIsNone(sample.calibration)
 
     def test_stale_measurement_from_repair_is_not_valid_for_display(self) -> None:
-        from neopest.gui_layout_builders import _format_total_leaf_area_display
+        from neopest.measurements import phase5_result_status_display
         from neopest.measurements import leaf_measurement_matches_provenance
 
         with TemporaryDirectory() as tmp:
@@ -216,9 +216,7 @@ class TestLegacyInheritedCalibrationRepair(unittest.TestCase):
                     image_hash=sample.image_hash,
                 )
             )
-            display = _format_total_leaf_area_display(sample, preview_status=None)
-            self.assertEqual(display, "Calibration required")
-            self.assertNotIn("in²", display)
+            self.assertEqual(phase5_result_status_display(sample), "Calibration required")
 
     def test_repair_save_failure_preserves_original_workspace_and_raises(self) -> None:
         from unittest.mock import patch
