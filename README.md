@@ -1,8 +1,6 @@
 # NeoPest
 
-NeoPest is a deterministic computer-vision application for measuring strawberry leaf area and candidate brown/necrotic disease from individual strawberry leaf images.
-
-**Viewing masks never changes scientific results. Measurements are created or updated only when Calculate Results is used.**
+NeoPest is a computer-vision application for measuring strawberry leaf area and candidate brown/necrotic disease from individual strawberry leaf images.
 
 ## NeoPest Interface
 
@@ -20,7 +18,6 @@ NeoPest is a deterministic computer-vision application for measuring strawberry 
 - Whole-leaf segmentation
 - Candidate disease segmentation
 - Display-only preview modes (**View** dropdown)
-- Explicit **Calculate Results** workflow
 - Persisted measurements (total leaf area, candidate disease area, coverage, non-candidate leaf area)
 - Workspace and condition-group management
 
@@ -30,7 +27,6 @@ NeoPest is a deterministic computer-vision application for measuring strawberry 
 - One image at a time — no batch processing
 - No CSV or JSON export; no saved mask export
 - No automatic calibration or calibration propagation between images
-- No machine learning
 
 ## Installation (macOS)
 
