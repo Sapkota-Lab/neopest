@@ -4,6 +4,16 @@ NeoPest is a deterministic computer-vision application for measuring strawberry 
 
 **Viewing masks never changes scientific results. Measurements are created or updated only when Calculate Results is used.**
 
+## NeoPest Interface
+
+### Empty Workspace
+
+![NeoPest empty workspace](docs/images/neopest-empty-workspace.png)
+
+### Analysis Workspace
+
+![NeoPest with imported samples, previews, and measurements](docs/images/neopest-analysis-workspace.png)
+
 ## Current Capabilities
 
 - Manual image-specific calibration
