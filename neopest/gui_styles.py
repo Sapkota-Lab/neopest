@@ -204,9 +204,37 @@ def build_application_stylesheet() -> str:
         color: {COLOR_CONTROL_TEXT_DISABLED};
         border: 1px solid {COLOR_CONTROL_BORDER};
     }}
+    QPushButton#addAreaButton:checked {{
+        background-color: #ff5f3c;
+        color: #1a1a1a;
+        border: 1px solid #ff5f3c;
+        font-weight: 600;
+    }}
+    QPushButton#removeAreaButton:checked {{
+        background-color: #f4f4f4;
+        color: #1a1a1a;
+        border: 1px solid #d0d0d0;
+        font-weight: 600;
+    }}
     QStatusBar {{
         background-color: {COLOR_STATUS_BAR_BACKGROUND};
         color: {COLOR_STATUS_BAR_TEXT};
         border-top: 1px solid {COLOR_STATUS_BAR_BORDER};
+    }}
+    QLabel#workProgressLabel {{
+        color: {COLOR_CONTROL_TEXT};
+        padding-right: 8px;
+    }}
+    QProgressBar#workProgressBar {{
+        border: 1px solid {COLOR_CONTROL_BORDER};
+        border-radius: 2px;
+        background-color: {COLOR_EXPLORER_BACKGROUND};
+        min-width: 168px;
+        max-width: 168px;
+        min-height: 10px;
+        max-height: 10px;
+    }}
+    QProgressBar#workProgressBar::chunk {{
+        background-color: {COLOR_ACCENT};
     }}
     """

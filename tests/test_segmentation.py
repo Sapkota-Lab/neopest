@@ -14,12 +14,14 @@ from neopest.image_io import load_image_rgb_array
 from neopest.metadata import SampleRecord
 from neopest.results import AnalysisStatus, CalibrationStatus
 from neopest.segmentation import (
+    SETTINGS_VERSION,
     LeafMaskPreviewSettings,
     LeafMaskPreviewStatus,
     clean_leaf_mask,
-    detect_blue_background,
     detect_green_leaf_tissue,
+    detect_white_paper_background,
     exclude_white_wrapping,
+    render_leaf_mask_diagnostic,
     segment_leaf_preview,
 )
 
@@ -31,10 +33,10 @@ def _make_synthetic_leaf_image(
     include_brown: bool = True,
     include_white_wrapping: bool = True,
 ) -> np.ndarray:
-    """Build a blue-dish / green-leaf / optional brown / white-wrap test image."""
-    image = np.full((height, width, 3), 245, dtype=np.uint8)
+    """Build a white-pad / green-leaf / optional brown / white-wrap test image."""
+    image = np.full((height, width, 3), (16, 16, 18), dtype=np.uint8)
     center = (width // 2, height // 2)
-    cv2.circle(image, center, 140, (35, 90, 210), thickness=-1)
+    cv2.circle(image, center, 140, (236, 234, 230), thickness=-1)
     cv2.ellipse(image, (center[0], center[1] + 10), (85, 115), 0, 0, 360, (45, 170, 55), -1)
     if include_brown:
         cv2.ellipse(image, (center[0], center[1] + 20), (28, 38), 0, 0, 360, (95, 75, 35), -1)
@@ -68,7 +70,7 @@ def _make_realistic_lab_image(
     cv2.rectangle(image, (20, 20), (150, 90), (255, 248, 200), thickness=-1)
 
     dish_center = (width // 2, 270)
-    cv2.circle(image, dish_center, 165, (35, 90, 210), thickness=-1)
+    cv2.circle(image, dish_center, 165, (236, 234, 230), thickness=-1)
 
     # Large tape/glare rectangle inside dish, away from the leaf body.
     cv2.rectangle(image, (dish_center[0] + 35, dish_center[1] - 95), (dish_center[0] + 150, dish_center[1] - 15), (225, 232, 245), thickness=-1)
@@ -105,14 +107,101 @@ def _make_central_inoculation_leaf_image(
     height: int = 400,
 ) -> tuple[np.ndarray, tuple[int, int]]:
     """Leaf with a large central brown inoculation zone (green margin ring)."""
-    image = np.full((height, width, 3), 245, dtype=np.uint8)
+    image = np.full((height, width, 3), (16, 16, 18), dtype=np.uint8)
     center = (width // 2, height // 2)
-    cv2.circle(image, center, 140, (35, 90, 210), thickness=-1)
+    cv2.circle(image, center, 140, (236, 234, 230), thickness=-1)
     cv2.ellipse(image, (center[0], center[1] + 10), (85, 115), 0, 0, 360, (45, 170, 55), -1)
     # Large central inoculation/necrosis region replacing much of the blade interior.
     cv2.ellipse(image, (center[0], center[1] + 15), (58, 78), 0, 0, 360, (95, 75, 35), -1)
     inoculation_center = (center[0], center[1] + 15)
     return image, inoculation_center
+
+
+def _make_white_paper_assay_image() -> tuple[np.ndarray, dict[str, tuple[int, int]]]:
+    """White moisture pad inside a dish, with clutter that must stay outside the leaf.
+
+    Texture, a fold, and a shadow are part of the pad. The blue ruler, label,
+    rim, exterior, wrapping, and a disconnected yellow spot are not leaf.
+    """
+    height, width = 640, 480
+    image = np.full((height, width, 3), (12, 14, 18), dtype=np.uint8)
+    center = (240, 280)
+    cv2.circle(image, center, 158, (48, 50, 52), thickness=-1)
+    cv2.circle(image, center, 142, (236, 234, 230), thickness=-1)
+
+    yy, xx = np.ogrid[:height, :width]
+    paper_region = (xx - center[0]) ** 2 + (yy - center[1]) ** 2 <= 142**2
+    noise = np.random.default_rng(7).integers(-14, 15, size=image.shape, dtype=np.int16)
+    textured = image.astype(np.int16)
+    textured[paper_region] = np.clip(
+        textured[paper_region] + noise[paper_region],
+        0,
+        255,
+    )
+    image = textured.astype(np.uint8)
+
+    cv2.line(image, (120, 170), (132, 390), (168, 166, 162), 4)
+    cv2.ellipse(image, (150, 210), (26, 16), 15, 0, 360, (148, 146, 142), thickness=-1)
+
+    leaf_center = (center[0] - 8, center[1] + 18)
+    cv2.ellipse(image, leaf_center, (78, 96), 0, 0, 360, (42, 158, 52), thickness=-1)
+    cv2.ellipse(
+        image,
+        (leaf_center[0], leaf_center[1] + 8),
+        (24, 30),
+        0,
+        0,
+        360,
+        (96, 74, 36),
+        thickness=-1,
+    )
+    yellow_at = (leaf_center[0] - 30, leaf_center[1] - 20)
+    cv2.circle(image, yellow_at, 14, (220, 190, 50), thickness=-1)
+    pale_at = (leaf_center[0] + 24, leaf_center[1] + 36)
+    cv2.circle(image, pale_at, 12, (196, 188, 120), thickness=-1)
+    dark_at = (leaf_center[0] - 10, leaf_center[1] + 28)
+    cv2.circle(image, dark_at, 8, (42, 24, 16), thickness=-1)
+    hole_at = (leaf_center[0] + 8, leaf_center[1] - 36)
+    cv2.circle(image, hole_at, 7, (236, 234, 230), thickness=-1)
+    clutter_yellow = (center[0] + 95, center[1] - 90)
+    cv2.circle(image, clutter_yellow, 10, (220, 190, 50), thickness=-1)
+    disconnected_brown = (180, 160)
+    cv2.circle(image, disconnected_brown, 12, (90, 70, 30), thickness=-1)
+
+    wrap_at = (leaf_center[0] + 70, leaf_center[1] - 10)
+    cv2.rectangle(
+        image,
+        (wrap_at[0] - 16, wrap_at[1] - 14),
+        (wrap_at[0] + 22, wrap_at[1] + 16),
+        (250, 250, 250),
+        thickness=-1,
+    )
+    petiole_at = (wrap_at[0] - 28, wrap_at[1])
+
+    cv2.rectangle(image, (20, 560), (460, 620), (36, 78, 188), thickness=-1)
+    for tick_x in range(40, 450, 30):
+        cv2.line(image, (tick_x, 560), (tick_x, 588), (20, 20, 20), 2)
+    cv2.rectangle(image, (30, 24), (150, 70), (248, 248, 246), thickness=-1)
+
+    markers = {
+        "green_blade": (leaf_center[0], leaf_center[1] - 50),
+        "brown": (leaf_center[0], leaf_center[1] + 8),
+        "yellow": yellow_at,
+        "pale": pale_at,
+        "dark_damage": dark_at,
+        "paper_hole": hole_at,
+        "petiole": petiole_at,
+        "white_wrap": wrap_at,
+        "paper_fold": (126, 280),
+        "paper_shadow": (150, 210),
+        "disconnected_yellow": clutter_yellow,
+        "disconnected_brown": disconnected_brown,
+        "rim": (center[0], center[1] - 150),
+        "exterior": (12, 12),
+        "blue_ruler": (240, 590),
+        "label": (80, 46),
+    }
+    return image, markers
 
 
 class TestLeafMaskPreview(unittest.TestCase):
@@ -179,11 +268,17 @@ class TestLeafMaskPreview(unittest.TestCase):
         self.assertIsNone(preview.mask)
         self.assertTrue(preview.warnings)
 
-    def test_no_blue_background_fails_controlled(self) -> None:
+    def test_no_white_pad_fails_controlled(self) -> None:
         image = np.full((120, 120, 3), 245, dtype=np.uint8)
         preview = segment_leaf_preview(image)
         self.assertEqual(preview.status, LeafMaskPreviewStatus.FAILED)
         self.assertIsNone(preview.mask)
+        self.assertIn("No white moisture-pad background detected.", preview.warnings)
+
+    def test_saved_leaf_settings_version_is_current_white_pad_version(self) -> None:
+        preview = segment_leaf_preview(_make_synthetic_leaf_image())
+        self.assertEqual(preview.settings_snapshot["settings_version"], SETTINGS_VERSION)
+        self.assertEqual(SETTINGS_VERSION, 3)
 
     def test_invalid_shape_returns_failed_preview(self) -> None:
         preview = segment_leaf_preview(np.zeros((10, 10), dtype=np.uint8))
@@ -233,11 +328,6 @@ class TestLeafMaskPreview(unittest.TestCase):
             cv2.imwrite(str(path), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
             loaded = load_image_rgb_array(path)
             self.assertEqual(loaded.shape, image.shape)
-
-    def test_detect_blue_background_finds_dish(self) -> None:
-        image = _make_synthetic_leaf_image()
-        blue = detect_blue_background(image, LeafMaskPreviewSettings())
-        self.assertTrue(np.any(blue))
 
     def test_exclude_white_wrapping_removes_bright_pixels(self) -> None:
         image = _make_synthetic_leaf_image(include_white_wrapping=True)
@@ -310,6 +400,75 @@ class TestRealisticLabSegmentation(unittest.TestCase):
             preview.mask[disconnected[1], disconnected[0]],
             "Brown tissue disconnected from green leaf should not be in final mask",
         )
+
+
+class TestWhitePaperSegmentation(unittest.TestCase):
+    def test_white_paper_keeps_leaf_tissue_and_excludes_background(self) -> None:
+        image, markers = _make_white_paper_assay_image()
+        preview = segment_leaf_preview(image)
+        self.assertEqual(preview.status, LeafMaskPreviewStatus.SUCCESS, preview.warnings)
+        assert preview.mask is not None
+        mask = preview.mask
+
+        for name in ("green_blade", "brown", "yellow", "pale", "dark_damage", "petiole"):
+            x, y = markers[name]
+            self.assertTrue(mask[y, x], f"{name} should remain inside the leaf mask")
+
+        for name in (
+            "paper_hole",
+            "white_wrap",
+            "paper_fold",
+            "paper_shadow",
+            "disconnected_yellow",
+            "disconnected_brown",
+            "rim",
+            "exterior",
+            "blue_ruler",
+            "label",
+        ):
+            x, y = markers[name]
+            self.assertFalse(mask[y, x], f"{name} should stay outside the leaf mask")
+
+        paper = detect_white_paper_background(image, LeafMaskPreviewSettings())
+        self.assertFalse(np.any(mask & paper))
+        self.assertGreater(int(np.count_nonzero(mask)), 0)
+
+    def test_blue_ruler_alone_is_not_a_dish(self) -> None:
+        image = np.full((320, 480, 3), (12, 14, 18), dtype=np.uint8)
+        cv2.rectangle(image, (20, 250), (460, 300), (36, 78, 188), thickness=-1)
+        cv2.ellipse(image, (240, 140), (70, 80), 0, 0, 360, (42, 158, 52), thickness=-1)
+        preview = segment_leaf_preview(image)
+        self.assertEqual(preview.status, LeafMaskPreviewStatus.FAILED)
+        self.assertIsNone(preview.mask)
+        self.assertTrue(preview.warnings)
+
+    def test_white_paper_preview_is_deterministic(self) -> None:
+        image, _markers = _make_white_paper_assay_image()
+        first = segment_leaf_preview(image)
+        second = segment_leaf_preview(image)
+        self.assertEqual(first.status, second.status)
+        assert first.mask is not None and second.mask is not None
+        self.assertTrue(np.array_equal(first.mask, second.mask))
+
+    def test_render_leaf_mask_diagnostic_outlines_without_mutating_inputs(self) -> None:
+        image, _markers = _make_white_paper_assay_image()
+        preview = segment_leaf_preview(image)
+        assert preview.mask is not None
+        image_before = image.copy()
+        mask_before = preview.mask.copy()
+        diagnostic = render_leaf_mask_diagnostic(image, preview.mask)
+        self.assertTrue(np.array_equal(image, image_before))
+        self.assertTrue(np.array_equal(preview.mask, mask_before))
+        self.assertEqual(diagnostic.shape, image.shape)
+        self.assertTrue(np.any(np.any(diagnostic != image, axis=2) & preview.mask))
+        contours, _hierarchy = cv2.findContours(
+            preview.mask.astype(np.uint8),
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        self.assertGreater(len(contours), 0)
+        boundary = tuple(int(v) for v in contours[0][0, 0])
+        self.assertFalse(np.array_equal(diagnostic[boundary[1], boundary[0]], image[boundary[1], boundary[0]]))
 
 
 class TestGuiSegmentationSeparation(unittest.TestCase):

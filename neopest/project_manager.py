@@ -8,13 +8,20 @@ import shutil
 from pathlib import Path
 
 from neopest import __version__
-from neopest.image_io import compute_image_hash, is_supported_image, load_image_info
+from neopest.mask_correction import refresh_correction_for_calibration
+from neopest.image_io import (
+    HEIF_IMAGE_SUFFIXES,
+    compute_image_hash,
+    is_supported_image,
+    load_image_info,
+)
 from neopest.metadata import (
     DEFAULT_CONDITION_GROUP_NAME,
     WORKSPACE_JSON_FILENAME,
     CalibrationRecord,
     CandidateDiseaseMeasurementRecord,
     ConditionGroupRecord,
+    DiseaseMaskCorrectionRecord,
     LeafMeasurementRecord,
     SampleRecord,
     WorkspaceMetadata,
@@ -206,7 +213,12 @@ def import_images(
         if not is_supported_image(source):
             raise WorkspaceError(f"Unsupported image format: {source.suffix}")
 
-        info = load_image_info(source)
+        try:
+            info = load_image_info(source)
+        except ValueError as exc:
+            if source.suffix.lower() not in HEIF_IMAGE_SUFFIXES:
+                raise
+            raise WorkspaceError(str(exc)) from exc
         image_hash = compute_image_hash(source)
         sample = SampleRecord.create(
             condition_group_id=target_group_id,
@@ -314,6 +326,31 @@ def save_sample_calculation_results(
     except OSError:
         sample.leaf_measurement = previous_leaf
         sample.candidate_disease_measurement = previous_candidate
+        raise
+    return sample
+
+
+def save_sample_disease_mask_correction(
+    workspace: WorkspaceMetadata,
+    sample_id: str,
+    correction: DiseaseMaskCorrectionRecord | None,
+    *,
+    save: bool = True,
+) -> SampleRecord:
+    """Persist researcher mask corrections without replacing the automatic result."""
+    sample = workspace.get_sample(sample_id)
+    if sample is None:
+        raise WorkspaceError(f"Unknown sample: {sample_id}")
+
+    previous = sample.disease_mask_correction
+    sample.disease_mask_correction = correction
+    if not save:
+        return sample
+
+    try:
+        save_workspace(workspace)
+    except OSError:
+        sample.disease_mask_correction = previous
         raise
     return sample
 
@@ -532,6 +569,8 @@ def save_sample_calibration(
     sample.calibration_status = CalibrationStatus.MANUAL
     # Phase 3C: calibration save does not run final analysis. Preserve analysis_status
     # and invalidate whole-leaf area measurements tied to prior calibration.
+    # A scale change on the same image grid recalculates corrected areas in place.
+    refresh_correction_for_calibration(sample)
 
     if save:
         save_workspace(workspace)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -46,16 +47,29 @@ class ExplicitCalculationOutput:
 
 
 def run_explicit_calculation(
-    image_array: np.ndarray,
+    image_array: np.ndarray | None,
     calibration: CalibrationRecord,
     *,
     source_image_hash: str | None = None,
+    leaf_preview: LeafMaskPreview | None = None,
+    disease_preview: DiseaseMaskPreview | None = None,
+    on_stage: Callable[[str], None] | None = None,
 ) -> ExplicitCalculationOutput:
-    """Run a fresh leaf and candidate-disease calculation from one source image."""
+    """Run a fresh leaf and candidate-disease calculation from one source image.
+
+    Stored previews are reused only when the caller supplies masks that already
+    match the current segmentation. Measurements are still calculated from those
+    full-resolution masks.
+    """
     if calibration is None:
         raise CalculationError("Manual calibration is required before calculating results.")
 
-    leaf_preview = segment_leaf_preview(image_array)
+    if leaf_preview is None:
+        if image_array is None:
+            raise CalculationError("Source image is required.")
+        if on_stage is not None:
+            on_stage("Finding leaf")
+        leaf_preview = segment_leaf_preview(image_array)
     if leaf_preview.status is not LeafMaskPreviewStatus.SUCCESS or leaf_preview.mask is None:
         message = (
             leaf_preview.warnings[0]
@@ -73,12 +87,17 @@ def run_explicit_calculation(
     )
     leaf_method = leaf_preview.method or PREVIEW_METHOD
 
-    disease_preview = segment_disease_preview(
-        image_array,
-        leaf_mask,
-        whole_leaf_method=leaf_method,
-        whole_leaf_settings_version=leaf_settings_version,
-    )
+    if disease_preview is None:
+        if image_array is None:
+            raise CalculationError("Source image is required.")
+        if on_stage is not None:
+            on_stage("Identifying candidate disease")
+        disease_preview = segment_disease_preview(
+            image_array,
+            leaf_mask,
+            whole_leaf_method=leaf_method,
+            whole_leaf_settings_version=leaf_settings_version,
+        )
     if (
         disease_preview.status is not DiseaseMaskPreviewStatus.READY
         or disease_preview.disease_mask is None
@@ -103,6 +122,8 @@ def run_explicit_calculation(
     )
     disease_method = disease_preview.method or DISEASE_PREVIEW_METHOD
 
+    if on_stage is not None:
+        on_stage("Updating measurements")
     try:
         combined = calculate_candidate_disease_measurement(
             leaf_mask,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,11 @@ SUPPORTED_DISTANCE_UNITS = (DISTANCE_UNIT_MM, DISTANCE_UNIT_CM, DISTANCE_UNIT_IN
 MM_PER_INCH = 25.4
 MM2_PER_IN2 = 645.16
 CALCULATION_METHOD_EXPLICIT_V1 = "explicit_leaf_and_candidate_disease_v1"
+MASK_STROKE_ADD = "add"
+MASK_STROKE_REMOVE = "remove"
+DISEASE_MASK_CORRECTION_STATUS_VALID = "valid"
+DISEASE_MASK_CORRECTION_STATUS_REVIEW = "review_required"
+RESEARCHER_CORRECTED_RESULT_LABEL = "Researcher-corrected"
 
 
 def _utc_now_iso() -> str:
@@ -92,6 +97,7 @@ class CalibrationRecord:
     calibration_method: str = CALIBRATION_METHOD_MANUAL
     calibrated_at: str = field(default_factory=_utc_now_iso)
     notes: str = ""
+    pixel_grid: str | None = None
 
     def entered_distance_label(self) -> str:
         if self.known_distance_value is not None and self.known_distance_unit:
@@ -114,6 +120,8 @@ class CalibrationRecord:
             payload["known_distance_value"] = self.known_distance_value
         if self.known_distance_unit is not None:
             payload["known_distance_unit"] = self.known_distance_unit
+        if self.pixel_grid is not None:
+            payload["pixel_grid"] = self.pixel_grid
         return payload
 
     @classmethod
@@ -140,6 +148,9 @@ class CalibrationRecord:
             point_2_y=float(data["point_2_y"]),
             calibrated_at=str(data.get("calibrated_at", _utc_now_iso())),
             notes=str(data.get("notes", "")),
+            pixel_grid=(
+                str(data["pixel_grid"]) if data.get("pixel_grid") is not None else None
+            ),
         )
 
 
@@ -331,13 +342,195 @@ class CandidateDiseaseMeasurementRecord:
         )
 
 
+@dataclass(frozen=True)
+class MaskStroke:
+    """One binary brush stroke in oriented image coordinates.
+
+    ``add`` includes pixels in candidate disease. ``remove`` excludes them.
+    Removal does not record a confirmed-healthy label.
+    """
+
+    operation: str
+    radius_px: float
+    points: tuple[tuple[float, float], ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "operation": self.operation,
+            "radius_px": self.radius_px,
+            "points": [[x, y] for x, y in self.points],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MaskStroke:
+        operation = str(data["operation"])
+        if operation not in {MASK_STROKE_ADD, MASK_STROKE_REMOVE}:
+            raise ValueError(f"Unknown mask stroke operation: {operation}")
+        points = tuple(
+            (float(point[0]), float(point[1])) for point in data.get("points", [])
+        )
+        return cls(
+            operation=operation,
+            radius_px=float(data["radius_px"]),
+            points=points,
+        )
+
+
+@dataclass
+class DiseaseMaskCorrectionRecord:
+    """Researcher brush corrections stored separately from the automatic result.
+
+    Corrected areas describe candidate disease after these strokes. The automatic
+    measurement remains on the sample and is not replaced by these values.
+    """
+
+    status: str
+    strokes: tuple[MaskStroke, ...] = ()
+    result_label: str = RESEARCHER_CORRECTED_RESULT_LABEL
+    source_image_hash: str | None = None
+    pixel_grid: str | None = None
+    leaf_mask_method: str | None = None
+    leaf_mask_settings_version: int | None = None
+    disease_mask_method: str | None = None
+    disease_mask_settings_version: int | None = None
+    total_leaf_pixels: int | None = None
+    total_leaf_area_mm2: float | None = None
+    total_leaf_area_in2: float | None = None
+    corrected_candidate_disease_pixels: int | None = None
+    corrected_candidate_disease_area_mm2: float | None = None
+    corrected_candidate_disease_area_in2: float | None = None
+    corrected_candidate_disease_coverage_percent: float | None = None
+    corrected_non_candidate_leaf_area_mm2: float | None = None
+    corrected_non_candidate_leaf_area_in2: float | None = None
+    pixels_per_mm_used: float | None = None
+    corrected_at: str | None = None
+    review_reason: str | None = None
+
+    def mark_review_required(self, reason: str) -> DiseaseMaskCorrectionRecord:
+        """Keep the strokes and mark them as not safe to apply."""
+        return replace(
+            self,
+            status=DISEASE_MASK_CORRECTION_STATUS_REVIEW,
+            review_reason=reason,
+        )
+
+    def with_rescaled_areas(
+        self,
+        *,
+        total_leaf_pixels: int,
+        total_leaf_area_mm2: float,
+        total_leaf_area_in2: float,
+        corrected_candidate_disease_pixels: int,
+        corrected_candidate_disease_area_mm2: float,
+        corrected_candidate_disease_area_in2: float,
+        corrected_candidate_disease_coverage_percent: float,
+        corrected_non_candidate_leaf_area_mm2: float,
+        corrected_non_candidate_leaf_area_in2: float,
+        pixels_per_mm_used: float,
+    ) -> DiseaseMaskCorrectionRecord:
+        """Replace corrected areas after a scale change. Strokes stay put."""
+        return replace(
+            self,
+            status=DISEASE_MASK_CORRECTION_STATUS_VALID,
+            review_reason=None,
+            result_label=RESEARCHER_CORRECTED_RESULT_LABEL,
+            total_leaf_pixels=total_leaf_pixels,
+            total_leaf_area_mm2=total_leaf_area_mm2,
+            total_leaf_area_in2=total_leaf_area_in2,
+            corrected_candidate_disease_pixels=corrected_candidate_disease_pixels,
+            corrected_candidate_disease_area_mm2=corrected_candidate_disease_area_mm2,
+            corrected_candidate_disease_area_in2=corrected_candidate_disease_area_in2,
+            corrected_candidate_disease_coverage_percent=(
+                corrected_candidate_disease_coverage_percent
+            ),
+            corrected_non_candidate_leaf_area_mm2=corrected_non_candidate_leaf_area_mm2,
+            corrected_non_candidate_leaf_area_in2=corrected_non_candidate_leaf_area_in2,
+            pixels_per_mm_used=pixels_per_mm_used,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "status": self.status,
+            "result_label": self.result_label,
+            "strokes": [stroke.to_dict() for stroke in self.strokes],
+        }
+        optional = {
+            "source_image_hash": self.source_image_hash,
+            "pixel_grid": self.pixel_grid,
+            "leaf_mask_method": self.leaf_mask_method,
+            "leaf_mask_settings_version": self.leaf_mask_settings_version,
+            "disease_mask_method": self.disease_mask_method,
+            "disease_mask_settings_version": self.disease_mask_settings_version,
+            "total_leaf_pixels": self.total_leaf_pixels,
+            "total_leaf_area_mm2": self.total_leaf_area_mm2,
+            "total_leaf_area_in2": self.total_leaf_area_in2,
+            "corrected_candidate_disease_pixels": self.corrected_candidate_disease_pixels,
+            "corrected_candidate_disease_area_mm2": self.corrected_candidate_disease_area_mm2,
+            "corrected_candidate_disease_area_in2": self.corrected_candidate_disease_area_in2,
+            "corrected_candidate_disease_coverage_percent": (
+                self.corrected_candidate_disease_coverage_percent
+            ),
+            "corrected_non_candidate_leaf_area_mm2": self.corrected_non_candidate_leaf_area_mm2,
+            "corrected_non_candidate_leaf_area_in2": self.corrected_non_candidate_leaf_area_in2,
+            "pixels_per_mm_used": self.pixels_per_mm_used,
+            "corrected_at": self.corrected_at,
+            "review_reason": self.review_reason,
+        }
+        for key, value in optional.items():
+            if value is not None:
+                payload[key] = value
+        return payload
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DiseaseMaskCorrectionRecord:
+        return cls(
+            status=str(data.get("status", DISEASE_MASK_CORRECTION_STATUS_VALID)),
+            result_label=str(
+                data.get("result_label", RESEARCHER_CORRECTED_RESULT_LABEL)
+            ),
+            strokes=tuple(
+                MaskStroke.from_dict(item) for item in data.get("strokes", [])
+            ),
+            source_image_hash=data.get("source_image_hash"),
+            pixel_grid=data.get("pixel_grid"),
+            leaf_mask_method=data.get("leaf_mask_method"),
+            leaf_mask_settings_version=data.get("leaf_mask_settings_version"),
+            disease_mask_method=data.get("disease_mask_method"),
+            disease_mask_settings_version=data.get("disease_mask_settings_version"),
+            total_leaf_pixels=data.get("total_leaf_pixels"),
+            total_leaf_area_mm2=data.get("total_leaf_area_mm2"),
+            total_leaf_area_in2=data.get("total_leaf_area_in2"),
+            corrected_candidate_disease_pixels=data.get(
+                "corrected_candidate_disease_pixels"
+            ),
+            corrected_candidate_disease_area_mm2=data.get(
+                "corrected_candidate_disease_area_mm2"
+            ),
+            corrected_candidate_disease_area_in2=data.get(
+                "corrected_candidate_disease_area_in2"
+            ),
+            corrected_candidate_disease_coverage_percent=data.get(
+                "corrected_candidate_disease_coverage_percent"
+            ),
+            corrected_non_candidate_leaf_area_mm2=data.get(
+                "corrected_non_candidate_leaf_area_mm2"
+            ),
+            corrected_non_candidate_leaf_area_in2=data.get(
+                "corrected_non_candidate_leaf_area_in2"
+            ),
+            pixels_per_mm_used=data.get("pixels_per_mm_used"),
+            corrected_at=data.get("corrected_at"),
+            review_reason=data.get("review_reason"),
+        )
+
+
 @dataclass
 class SampleRecord:
     """One imported still image representing a single leaf observation.
 
-    Each sample is one image capture (e.g. one day/timepoint). Future analysis
-    may group samples by experimental unit and timepoint for disease spread;
-    Phase 3 preview does not persist masks or disease measurements per sample.
+    Each sample is one image capture. Automatic measurements and optional
+    researcher mask corrections are stored with the sample. The mask images
+    themselves are not saved as separate files.
     """
 
     sample_id: str
@@ -355,6 +548,7 @@ class SampleRecord:
     calibration: CalibrationRecord | None = None
     leaf_measurement: LeafMeasurementRecord | None = None
     candidate_disease_measurement: CandidateDiseaseMeasurementRecord | None = None
+    disease_mask_correction: DiseaseMaskCorrectionRecord | None = None
 
     @classmethod
     def create(
@@ -384,7 +578,7 @@ class SampleRecord:
         return (workspace_root / self.raw_image_path).resolve()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "sample_id": self.sample_id,
             "condition_group_id": self.condition_group_id,
             "display_name": self.display_name,
@@ -411,6 +605,9 @@ class SampleRecord:
                 else None
             ),
         }
+        if self.disease_mask_correction is not None:
+            payload["disease_mask_correction"] = self.disease_mask_correction.to_dict()
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SampleRecord:
@@ -450,6 +647,11 @@ class SampleRecord:
                     data["candidate_disease_measurement"]
                 )
                 if data.get("candidate_disease_measurement")
+                else None
+            ),
+            disease_mask_correction=(
+                DiseaseMaskCorrectionRecord.from_dict(data["disease_mask_correction"])
+                if data.get("disease_mask_correction")
                 else None
             ),
         )
