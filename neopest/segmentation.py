@@ -1,11 +1,13 @@
-"""Deterministic leaf mask preview segmentation.
+"""Deterministic whole-leaf segmentation for white moisture-pad assays.
 
-Scientific note (Phase 3 preview only):
-Experiments apply inoculum to the central leaf region and image the same unit
-over multiple days. Central brown/dark tissue is biologically meaningful
-inoculation/necrosis and must remain inside the leaf blade mask — it is not
-an artifact and is not disease segmentation. Future phases may quantify disease
-area and spread per timepoint; this module returns a preview leaf mask only.
+Central brown or dark tissue stays inside the leaf blade. It is not treated as
+background. Candidate disease is identified by a separate mask and is not a
+diagnosis. This module returns the whole-leaf mask only.
+
+The dish interior is white moisture-retaining paper. Leaf area is green-seeded:
+connected brown, yellow, pale, and dark damaged tissue stay in the blade.
+Paper texture, wrapping, the rim, the exterior, and a blue ruler do not
+become leaf.
 """
 
 from __future__ import annotations
@@ -18,7 +20,9 @@ import cv2
 import numpy as np
 
 PREVIEW_METHOD = "green_seeded_color_thresholding"
-SETTINGS_VERSION = 2
+# Version 3 drops blue-pad dish detection. Saved version 2 results stay on
+# disk and no longer match current provenance until a researcher recalculates.
+SETTINGS_VERSION = 3
 
 
 class LeafMaskPreviewStatus(str, Enum):
@@ -33,7 +37,7 @@ class LeafMaskPreviewSettings:
     """Versioned defaults for Phase 3B green-seeded leaf preview."""
 
     settings_version: int = SETTINGS_VERSION
-    # Blue petri-dish background (spatial constraint cue).
+    # Blue ruler and blue-cast cloth. Used only to keep those pixels out of the leaf.
     blue_hue_min: int = 85
     blue_hue_max: int = 135
     blue_sat_min: int = 40
@@ -64,6 +68,25 @@ class LeafMaskPreviewSettings:
     dish_dilate_radius: int = 8
     dish_shrink_radius: int = 4
     max_leaf_dish_fraction: float = 0.82
+    # White moisture-retaining paper is the only dish interior.
+    paper_sat_max: int = 55
+    paper_val_min: int = 85
+    paper_exg_abs_max: float = 14.0
+    paper_min_area_fraction: float = 0.06
+    paper_max_area_fraction: float = 0.82
+    paper_max_aspect: float = 2.2
+    paper_max_border_fraction: float = 0.50
+    yellow_hue_min: int = 8
+    yellow_hue_max: int = 45
+    yellow_sat_min: int = 40
+    yellow_val_min: int = 40
+    yellow_val_max: int = 250
+    pale_hue_min: int = 8
+    pale_hue_max: int = 95
+    pale_val_min: int = 80
+    pale_exg_min: float = 4.0
+    dark_damage_val_max: int = 62
+    dark_damage_sat_min: int = 25
 
 
 @dataclass
@@ -105,7 +128,7 @@ def detect_blue_background(
     image_rgb: np.ndarray,
     settings: LeafMaskPreviewSettings,
 ) -> np.ndarray:
-    """Return a boolean mask of blue petri-dish background pixels."""
+    """Return blue ruler or blue-cast cloth pixels to exclude from the leaf."""
     hsv = _image_hsv(image_rgb)
     hue = hsv[:, :, 0]
     sat = hsv[:, :, 1]
@@ -116,6 +139,157 @@ def detect_blue_background(
         & (sat >= settings.blue_sat_min)
         & (val >= settings.blue_val_min)
     )
+
+
+def _component_aspect(component: np.ndarray) -> float:
+    ys, xs = np.nonzero(component)
+    if ys.size == 0:
+        return 0.0
+    height = int(ys.max() - ys.min() + 1)
+    width = int(xs.max() - xs.min() + 1)
+    return max(height, width) / float(max(1, min(height, width)))
+
+
+def _border_fraction(component: np.ndarray) -> float:
+    border = np.zeros(component.shape, dtype=bool)
+    border[0, :] = True
+    border[-1, :] = True
+    border[:, 0] = True
+    border[:, -1] = True
+    border_count = int(np.count_nonzero(border))
+    if border_count == 0:
+        return 1.0
+    return float(np.count_nonzero(component & border) / border_count)
+
+
+def _dish_component_min_area(settings: LeafMaskPreviewSettings) -> int:
+    return max(100, settings.min_component_area_px // 5)
+
+
+def _largest_compact_paper_dish(
+    paper_mask: np.ndarray,
+    settings: LeafMaskPreviewSettings,
+) -> tuple[np.ndarray, int]:
+    """Return the largest paper component that can be a dish interior.
+
+    A wide ruler, label, or table can be brighter than the pad. Those regions
+    fail the aspect or border check and are not used as the dish.
+    """
+    if paper_mask.size == 0:
+        return np.zeros_like(paper_mask, dtype=bool), 0
+    component_count, labels = cv2.connectedComponents(paper_mask.astype(np.uint8))
+    min_area = _dish_component_min_area(settings)
+    image_area = float(paper_mask.size)
+    best = np.zeros_like(paper_mask, dtype=bool)
+    best_area = 0
+    for label in range(1, component_count):
+        component = labels == label
+        area = int(np.count_nonzero(component))
+        if area < min_area or area <= best_area:
+            continue
+        fraction = area / image_area
+        if fraction < settings.paper_min_area_fraction or fraction > settings.paper_max_area_fraction:
+            continue
+        if _component_aspect(component) > settings.paper_max_aspect:
+            continue
+        if _border_fraction(component) > settings.paper_max_border_fraction:
+            continue
+        best = component
+        best_area = area
+    return best, best_area
+
+
+def _exg(image_rgb: np.ndarray) -> np.ndarray:
+    red = image_rgb[:, :, 0].astype(np.float32)
+    green = image_rgb[:, :, 1].astype(np.float32)
+    blue = image_rgb[:, :, 2].astype(np.float32)
+    return 2.0 * green - red - blue
+
+
+def detect_extended_leaf_tissue(
+    image_rgb: np.ndarray,
+    settings: LeafMaskPreviewSettings,
+) -> np.ndarray:
+    """Return yellow, pale, reddish, and dark damaged leaf pixels.
+
+    Used only to grow a green seed on white paper. Achromatic paper, glare,
+    and white wrapping are not included. This is not disease classification.
+    """
+    hsv = _image_hsv(image_rgb)
+    hue = hsv[:, :, 0]
+    sat = hsv[:, :, 1]
+    val = hsv[:, :, 2]
+    red = image_rgb[:, :, 0].astype(np.float32)
+    green = image_rgb[:, :, 1].astype(np.float32)
+    exg = _exg(image_rgb)
+
+    yellow = (
+        (hue >= settings.yellow_hue_min)
+        & (hue <= settings.yellow_hue_max)
+        & (sat >= settings.yellow_sat_min)
+        & (val >= settings.yellow_val_min)
+        & (val <= settings.yellow_val_max)
+    )
+    pale = (
+        (hue >= settings.pale_hue_min)
+        & (hue <= settings.pale_hue_max)
+        & (sat > settings.glare_sat_max)
+        & (val >= settings.pale_val_min)
+        & (exg >= settings.pale_exg_min)
+    )
+    dark_damage = (
+        (val <= settings.dark_damage_val_max)
+        & (val >= settings.brown_val_min)
+        & (sat >= settings.dark_damage_sat_min)
+        & (red >= green)
+    )
+    reddish = (
+        ((hue <= settings.brown_hue_min) | (hue >= 170))
+        & (sat >= settings.brown_sat_min)
+        & (val >= settings.brown_val_min)
+        & (val <= settings.yellow_val_max)
+        & (red >= green)
+    )
+    blue_pixels = (
+        (hue >= settings.blue_hue_min)
+        & (hue <= settings.blue_hue_max)
+        & (sat >= settings.blue_sat_min)
+    )
+    return (yellow | pale | dark_damage | reddish) & ~blue_pixels & ~detect_glare_and_wrapping(
+        image_rgb,
+        settings,
+    )
+
+
+def detect_white_paper_background(
+    image_rgb: np.ndarray,
+    settings: LeafMaskPreviewSettings,
+) -> np.ndarray:
+    """Return white moisture-pad pixels, including folds and soft shadows.
+
+    A 3x3 median and a small close bridge paper texture. Pixels that already
+    match leaf-tissue rules are removed so the pad does not consume the blade.
+    """
+    smoothed = cv2.medianBlur(np.ascontiguousarray(image_rgb, dtype=np.uint8), 3)
+    hsv = _image_hsv(smoothed)
+    sat = hsv[:, :, 1]
+    val = hsv[:, :, 2]
+    paper = (
+        (sat <= settings.paper_sat_max)
+        & (val >= settings.paper_val_min)
+        & (np.abs(_exg(smoothed)) <= settings.paper_exg_abs_max)
+    )
+    closed = cv2.morphologyEx(
+        paper.astype(np.uint8),
+        cv2.MORPH_CLOSE,
+        _kernel(max(1, settings.morphology_radius // 2)),
+    ).astype(bool)
+    leafish = (
+        detect_green_leaf_tissue(image_rgb, settings)
+        | detect_brown_necrosis_tissue(image_rgb, settings)
+        | detect_extended_leaf_tissue(image_rgb, settings)
+    )
+    return closed & ~leafish
 
 
 def detect_green_leaf_tissue(
@@ -354,21 +528,24 @@ def segment_leaf_preview(
         )
 
     image_rgb = np.ascontiguousarray(image_array, dtype=np.uint8)
-    blue_mask = detect_blue_background(image_rgb, active_settings)
-    blue_area = int(np.count_nonzero(blue_mask))
-    if blue_area == 0:
+    image_area = height * width
+    paper_mask = detect_white_paper_background(image_rgb, active_settings)
+    dish_source, paper_area = _largest_compact_paper_dish(paper_mask, active_settings)
+    if paper_area == 0:
         return LeafMaskPreview(
             mask=None,
             status=LeafMaskPreviewStatus.FAILED,
-            warnings=["No blue petri-dish background detected."],
+            warnings=["No white moisture-pad background detected."],
             settings_snapshot=snapshot,
         )
+    if image_area > 0 and paper_area / image_area < 0.08:
+        warnings.append(
+            "White paper dish detection is weak; verify dish boundary visually."
+        )
+    extended_tissue = detect_extended_leaf_tissue(image_rgb, active_settings)
+    blue_mask = detect_blue_background(image_rgb, active_settings)
 
-    image_area = height * width
-    if blue_area / image_area < 0.02:
-        warnings.append("Blue dish detection is weak; verify dish boundary visually.")
-
-    dish_region = _petri_dish_interior_mask(blue_mask, active_settings)
+    dish_region = _petri_dish_interior_mask(dish_source, active_settings)
     if not np.any(dish_region):
         return LeafMaskPreview(
             mask=None,
@@ -377,8 +554,10 @@ def segment_leaf_preview(
             settings_snapshot=snapshot,
         )
 
+    # Paper, cotton wrapping, and blue ruler or blue-cast cloth stay outside the leaf.
     exclusion_mask = (
-        blue_mask
+        paper_mask
+        | blue_mask
         | detect_glare_and_wrapping(image_rgb, active_settings)
     )
 
@@ -415,7 +594,10 @@ def segment_leaf_preview(
         )
 
     brown_candidate = (
-        detect_brown_necrosis_tissue(image_rgb, active_settings)
+        (
+            detect_brown_necrosis_tissue(image_rgb, active_settings)
+            | extended_tissue
+        )
         & dish_region
         & ~exclusion_mask
     )
@@ -469,8 +651,50 @@ def segment_leaf_preview(
     )
 
 
+def render_leaf_mask_diagnostic(
+    image_rgb: np.ndarray,
+    mask: np.ndarray,
+) -> np.ndarray:
+    """Return an RGB inspection image with the leaf mask tinted and outlined.
+
+    The tint matches the GUI whole-leaf overlay. The mask and measurements
+    are not modified.
+    """
+    if image_rgb.ndim != 3 or image_rgb.shape[2] != 3:
+        raise SegmentationError(
+            f"Expected RGB image array with shape (H, W, 3); got {image_rgb.shape}"
+        )
+    if mask.shape != image_rgb.shape[:2]:
+        raise SegmentationError(
+            "Diagnostic mask shape must match the image "
+            f"{image_rgb.shape[:2]}; got {mask.shape}"
+        )
+
+    diagnostic = np.array(image_rgb, copy=True, dtype=np.uint8)
+    tint = mask.astype(bool)
+    if np.any(tint):
+        # LEAF_MASK_OVERLAY_RGBA = (50, 220, 80, 110)
+        alpha = 110.0 / 255.0
+        color = np.array([50.0, 220.0, 80.0], dtype=np.float32)
+        pixels = diagnostic[tint].astype(np.float32)
+        diagnostic[tint] = np.clip(pixels * (1.0 - alpha) + color * alpha, 0, 255).astype(
+            np.uint8
+        )
+        contours, _hierarchy = cv2.findContours(
+            tint.astype(np.uint8),
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        cv2.drawContours(diagnostic, contours, -1, (255, 255, 0), 2, lineType=cv2.LINE_8)
+    return diagnostic
+
+
 def segment_leaf_and_disease(*_args, **_kwargs):
-    """Separate leaf tissue from background and identify necrotic regions."""
+    """Combined entry point kept unavailable.
+
+    Whole-leaf and candidate-disease masks are produced separately.
+    """
     raise NotImplementedError(
-        "Final leaf/disease segmentation is not implemented in Phase 3."
+        "Combined leaf and disease segmentation is not available. "
+        "Use the separate whole-leaf and candidate-disease functions."
     )

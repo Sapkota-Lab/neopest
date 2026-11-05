@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Sequence
 
+from neopest.image_io import display_orientation_is_identity
 from neopest.metadata import (
     CALIBRATION_METHOD_MANUAL,
     DISTANCE_UNIT_CM,
@@ -21,6 +23,7 @@ Point = tuple[float, float]
 ONE_INCH_MM = MM_PER_INCH
 KNOWN_ONE_INCH_DISTANCE_VALUE = 1.0
 KNOWN_ONE_INCH_DISTANCE_UNIT = DISTANCE_UNIT_IN
+CURRENT_PIXEL_GRID = "oriented-v1"
 
 
 class CalibrationError(Exception):
@@ -87,7 +90,20 @@ def build_manual_calibration_record(
         point_2_y=point_2[1],
         calibration_method=CALIBRATION_METHOD_MANUAL,
         notes=notes,
+        pixel_grid=CURRENT_PIXEL_GRID,
     )
+
+
+def calibration_matches_display_grid(record: CalibrationRecord, image_path: Path) -> bool:
+    """Return True when saved points use the current oriented display grid.
+
+    Records saved before orientation was shared have no ``pixel_grid``. Those
+    points stay stored, but they only still match images whose orientation
+    metadata does not move pixels. This does not rewrite or guess new points.
+    """
+    if record.pixel_grid == CURRENT_PIXEL_GRID:
+        return True
+    return display_orientation_is_identity(Path(image_path))
 
 
 def build_one_inch_manual_calibration_record(

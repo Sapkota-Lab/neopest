@@ -20,13 +20,21 @@ from PySide6.QtWidgets import QApplication
 from neopest.calibration import build_one_inch_manual_calibration_record
 from neopest.gui import MainWindow
 from neopest.measurements import (
+    CURRENT_DISEASE_MASK_METHOD,
+    CURRENT_DISEASE_MASK_SETTINGS_VERSION,
     CURRENT_LEAF_MASK_METHOD,
     CURRENT_LEAF_MASK_SETTINGS_VERSION,
     build_leaf_measurement_record,
     calculate_leaf_area,
     leaf_measurement_matches_provenance,
+    phase5_result_status_display,
 )
-from neopest.metadata import WORKSPACE_JSON_FILENAME, LeafMeasurementRecord
+from neopest.metadata import (
+    WORKSPACE_JSON_FILENAME,
+    CandidateDiseaseMeasurementRecord,
+    LeafMeasurementRecord,
+    SampleRecord,
+)
 from neopest.project_manager import (
     WorkspaceError,
     import_images,
@@ -152,6 +160,32 @@ class TestLeafMeasurementPersistence(unittest.TestCase):
                 image_hash="different",
             )
         )
+
+    def test_version_2_result_stays_stored_but_is_not_current(self) -> None:
+        calibration = build_one_inch_manual_calibration_record((0.0, 0.0), (50.0, 0.0))
+        sample = SampleRecord.create(
+            condition_group_id="condition_group_test",
+            display_name="Historical blue pad",
+            raw_image_path="raw_images/group/sample.png",
+        )
+        sample.image_hash = "sha256:historical"
+        sample.calibration = calibration
+        sample.candidate_disease_measurement = CandidateDiseaseMeasurementRecord(
+            status="valid",
+            total_leaf_pixels=172386,
+            candidate_disease_pixels=1200,
+            total_leaf_area_in2=1.5,
+            pixels_per_mm_used=calibration.pixels_per_mm,
+            source_image_hash=sample.image_hash,
+            leaf_mask_method=CURRENT_LEAF_MASK_METHOD,
+            leaf_mask_settings_version=2,
+            disease_mask_method=CURRENT_DISEASE_MASK_METHOD,
+            disease_mask_settings_version=CURRENT_DISEASE_MASK_SETTINGS_VERSION,
+        )
+        self.assertEqual(phase5_result_status_display(sample), "Recalculation required")
+        self.assertEqual(sample.candidate_disease_measurement.status, "valid")
+        self.assertEqual(sample.candidate_disease_measurement.total_leaf_pixels, 172386)
+        self.assertEqual(sample.candidate_disease_measurement.total_leaf_area_in2, 1.5)
 
     def test_mark_stale_helper(self) -> None:
         record = LeafMeasurementRecord(status="valid", leaf_area_in2=2.5)

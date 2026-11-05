@@ -7,13 +7,17 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QComboBox,
     QGridLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QSplitter,
     QStatusBar,
+    QStyleFactory,
     QVBoxLayout,
     QWidget,
 )
@@ -22,6 +26,7 @@ from neopest.explorer_tree import build_explorer_panel
 from neopest.gui_canvas import ImageCanvas, build_image_canvas_host
 from neopest.gui_styles import (
     CONTROL_ROW_SPACING,
+    INSPECTOR_ACTION_BUTTON_MIN_WIDTH,
     INSPECTOR_PANEL_MAX_WIDTH,
     INSPECTOR_PANEL_MIN_WIDTH,
     LEFT_PANEL_MIN_WIDTH,
@@ -38,13 +43,19 @@ from neopest.gui_styles import (
     apply_status_row_value_style,
     apply_workspace_preview_panel_style,
 )
+from neopest.mask_correction import (
+    can_start_disease_mask_correction,
+    correction_display_state,
+    correction_review_message,
+    format_automatic_candidate_summary,
+    result_status_for_sample,
+)
 from neopest.measurements import (
     candidate_disease_measurement_matches_provenance,
     format_area_in2_display,
     format_coverage_percent_display,
     phase5_measurement_row_placeholder,
     phase5_result_is_current,
-    phase5_result_status_display,
 )
 from neopest.metadata import SampleRecord, WorkspaceMetadata
 from neopest.results import CalibrationStatus
@@ -72,12 +83,20 @@ def _calculation_button_state(
     sample: SampleRecord,
     *,
     image_available: bool,
+    calibration_grid_matches: bool = True,
 ) -> tuple[str, bool, str]:
     if not image_available:
         return (
             "Calculate Results",
             False,
             "Source image is not available for calculation.",
+        )
+    if sample.calibration is not None and not calibration_grid_matches:
+        return (
+            "Calculate Results",
+            False,
+            "Saved calibration is in the previous image orientation. "
+            "Set the 1-inch calibration again.",
         )
     if sample.calibration is None:
         return (
@@ -183,6 +202,12 @@ class SampleInspectorPanel(QWidget):
         measurements_grid.addWidget(self.non_candidate_leaf_area_label, 3, 1)
         layout.addLayout(measurements_grid)
 
+        self.automatic_result_label = QLabel("")
+        apply_hint_style(self.automatic_result_label)
+        self.automatic_result_label.setWordWrap(True)
+        self.automatic_result_label.hide()
+        layout.addWidget(self.automatic_result_label)
+
         layout.addSpacing(8)
 
         status_caption = QLabel("STATUS")
@@ -236,12 +261,65 @@ class SampleInspectorPanel(QWidget):
         self.save_calibration_button = QPushButton("Save Calibration")
         self.cancel_calibration_button = QPushButton("Cancel Calibration")
         self.calculate_results_button = QPushButton("Calculate Results")
+        self.correct_disease_mask_button = QPushButton("Correct disease mask")
+        self.add_area_button = QPushButton("Add area")
+        self.remove_area_button = QPushButton("Remove area")
+        self.undo_correction_button = QPushButton("Undo")
+        self.redo_correction_button = QPushButton("Redo")
+        self.reset_corrections_button = QPushButton("Reset corrections")
+        self.done_correction_button = QPushButton("Done")
         self.run_analysis_button = QPushButton("Run Analysis")
+
+        self.add_area_button.setObjectName("addAreaButton")
+        self.remove_area_button.setObjectName("removeAreaButton")
+        self.add_area_button.setCheckable(True)
+        self.remove_area_button.setCheckable(True)
+        self.add_area_button.setChecked(True)
+        self._brush_operation_group = QButtonGroup(self)
+        self._brush_operation_group.setExclusive(True)
+        self._brush_operation_group.addButton(self.add_area_button)
+        self._brush_operation_group.addButton(self.remove_area_button)
+        self.add_area_button.setToolTip(
+            "Include brushed pixels in candidate disease, inside the whole-leaf mask."
+        )
+        self.remove_area_button.setToolTip(
+            "Exclude brushed pixels from candidate disease. This does not mark them as healthy tissue."
+        )
+        self.correct_disease_mask_button.setToolTip(
+            "Brush candidate disease on or off inside the whole-leaf mask. "
+            "The automatic result is kept."
+        )
+        self.reset_corrections_button.setToolTip(
+            "Restore the automatic candidate disease mask. Undo can bring the corrections back."
+        )
+        self.done_correction_button.setToolTip(
+            "Leave editing and keep corrections with the saved result."
+        )
+
+        self.brush_size_caption = QLabel("Brush size (image px)")
+        apply_status_row_label_style(self.brush_size_caption)
+        self.brush_size_value = QLabel("6 px radius")
+        apply_status_row_value_style(self.brush_size_value)
+        self.brush_size_slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.brush_size_slider.setRange(1, 40)
+        self.brush_size_slider.setValue(6)
+        self.brush_size_slider.setMinimumWidth(INSPECTOR_ACTION_BUTTON_MIN_WIDTH)
+        self.brush_size_slider.setToolTip(
+            "Brush radius in source-image pixels. The circle on the image is that footprint."
+        )
+        self.brush_size_slider.valueChanged.connect(self._on_brush_size_changed)
 
         apply_inspector_action_button(self.set_manual_calibration_button)
         apply_inspector_action_button(self.save_calibration_button)
         apply_inspector_action_button(self.cancel_calibration_button)
         apply_primary_action_button(self.calculate_results_button)
+        apply_inspector_action_button(self.correct_disease_mask_button)
+        apply_inspector_action_button(self.add_area_button)
+        apply_inspector_action_button(self.remove_area_button)
+        apply_inspector_action_button(self.undo_correction_button)
+        apply_inspector_action_button(self.redo_correction_button)
+        apply_inspector_action_button(self.reset_corrections_button)
+        apply_primary_action_button(self.done_correction_button)
         apply_inspector_action_button(self.run_analysis_button)
 
         self.calculate_results_button.setToolTip(
@@ -260,6 +338,27 @@ class SampleInspectorPanel(QWidget):
             self.save_calibration_button,
             self.cancel_calibration_button,
             self.calculate_results_button,
+            self.correct_disease_mask_button,
+            self.add_area_button,
+            self.remove_area_button,
+        ):
+            actions_layout.addWidget(button, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        actions_layout.addWidget(
+            self.brush_size_caption,
+            alignment=Qt.AlignmentFlag.AlignHCenter,
+        )
+        actions_layout.addWidget(
+            self.brush_size_value,
+            alignment=Qt.AlignmentFlag.AlignHCenter,
+        )
+        actions_layout.addWidget(self.brush_size_slider)
+
+        for button in (
+            self.undo_correction_button,
+            self.redo_correction_button,
+            self.reset_corrections_button,
+            self.done_correction_button,
         ):
             actions_layout.addWidget(button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
@@ -279,10 +378,12 @@ class SampleInspectorPanel(QWidget):
         layout.addWidget(actions_container)
         layout.addStretch(1)
 
+        self._correction_active = False
         self.set_calibration_controls_enabled(False)
         self.set_view_controls_enabled(False)
         self.set_calculation_controls_enabled(False)
         self.set_calibration_in_progress(False)
+        self.set_correction_in_progress(False)
         self.show_workspace_state(None)
 
     def set_view_controls_enabled(self, enabled: bool) -> None:
@@ -322,14 +423,72 @@ class SampleInspectorPanel(QWidget):
         self.set_manual_calibration_button.setEnabled(enabled)
         self.cancel_calibration_button.setEnabled(enabled)
 
+    def brush_radius_px(self) -> float:
+        return float(self.brush_size_slider.value())
+
+    def brush_operation(self) -> str:
+        if self.remove_area_button.isChecked():
+            return "remove"
+        return "add"
+
+    def _on_brush_size_changed(self, value: int) -> None:
+        self.brush_size_value.setText(f"{value} px radius")
+
+    def set_correction_history_enabled(
+        self,
+        *,
+        can_undo: bool,
+        can_redo: bool,
+        can_reset: bool,
+    ) -> None:
+        self.undo_correction_button.setEnabled(can_undo)
+        self.redo_correction_button.setEnabled(can_redo)
+        self.reset_corrections_button.setEnabled(can_reset)
+
+    def set_correction_in_progress(self, active: bool) -> None:
+        self._correction_active = active
+        editing = (
+            self.add_area_button,
+            self.remove_area_button,
+            self.brush_size_caption,
+            self.brush_size_value,
+            self.brush_size_slider,
+            self.undo_correction_button,
+            self.redo_correction_button,
+            self.reset_corrections_button,
+            self.done_correction_button,
+        )
+        for widget in editing:
+            widget.setVisible(active)
+        self.correct_disease_mask_button.setVisible(not active)
+        if active:
+            self.set_manual_calibration_button.setVisible(False)
+            self.save_calibration_button.setVisible(False)
+            self.cancel_calibration_button.setVisible(False)
+            self.calculate_results_button.setVisible(False)
+        elif not self.save_calibration_button.isVisible():
+            self.set_manual_calibration_button.setVisible(True)
+            self.calculate_results_button.setVisible(True)
+
     def set_calibration_in_progress(self, active: bool) -> None:
         self.set_manual_calibration_button.setVisible(not active)
         self.save_calibration_button.setVisible(active)
         self.cancel_calibration_button.setVisible(active)
         if active:
             self.save_calibration_button.setEnabled(False)
+            self.correct_disease_mask_button.setVisible(False)
+            self.calculate_results_button.setVisible(False)
         else:
             self.save_calibration_button.setEnabled(False)
+            if not self._correction_active:
+                self.correct_disease_mask_button.setVisible(True)
+                self.calculate_results_button.setVisible(True)
+        if self._correction_active:
+            self.set_manual_calibration_button.setVisible(False)
+            self.save_calibration_button.setVisible(False)
+            self.cancel_calibration_button.setVisible(False)
+            self.calculate_results_button.setVisible(False)
+            self.correct_disease_mask_button.setVisible(False)
 
     def set_save_calibration_enabled(self, enabled: bool) -> None:
         if self.save_calibration_button.isVisible():
@@ -353,6 +512,8 @@ class SampleInspectorPanel(QWidget):
         self._reset_measurement_labels()
         self.calibration_status_value.setText("—")
         self.result_status_value.setText("—")
+        self.automatic_result_label.hide()
+        self.automatic_result_label.setText("")
         self.view_mode_combo.setCurrentIndex(0)
         self.view_mode_combo.setEnabled(False)
         self.warnings_label.hide()
@@ -361,7 +522,9 @@ class SampleInspectorPanel(QWidget):
         self.set_view_controls_enabled(False)
         self.set_calculation_controls_enabled(False)
         self.set_calculation_button_state(label="Calculate Results", enabled=False, hint=None)
+        self.correct_disease_mask_button.setEnabled(False)
         self.set_calibration_in_progress(False)
+        self.set_correction_in_progress(False)
 
     def show_preview_warnings(self, warnings: str | None) -> None:
         if warnings:
@@ -379,6 +542,7 @@ class SampleInspectorPanel(QWidget):
         image_available: bool = True,
         warnings: str | None = None,
         calculation_failed: bool = False,
+        calibration_grid_matches: bool = True,
     ) -> None:
         self.sample_name_label.setText(sample.display_name)
         group = workspace.get_condition_group(sample.condition_group_id)
@@ -386,14 +550,47 @@ class SampleInspectorPanel(QWidget):
             group.display_name if group is not None else "Ungrouped"
         )
 
-        self.calibration_status_value.setText(
-            _format_calibration_status_value(sample.calibration_status)
-        )
+        if sample.calibration is not None and not calibration_grid_matches:
+            self.calibration_status_value.setText("Recalibration required")
+        else:
+            self.calibration_status_value.setText(
+                _format_calibration_status_value(sample.calibration_status)
+            )
         self.result_status_value.setText(
-            phase5_result_status_display(sample, calculation_failed=calculation_failed)
+            result_status_for_sample(
+                sample,
+                calculation_failed=calculation_failed,
+                calibration_grid_matches=calibration_grid_matches,
+            )
         )
 
-        if phase5_result_is_current(sample):
+        correction_state = correction_display_state(
+            sample,
+            calibration_grid_matches=calibration_grid_matches,
+        )
+        correction = sample.disease_mask_correction
+        if correction_state == "applied" and correction is not None:
+            self.total_leaf_area_label.setText(
+                format_area_in2_display(correction.total_leaf_area_in2)
+            )
+            self.candidate_disease_area_label.setText(
+                format_area_in2_display(correction.corrected_candidate_disease_area_in2)
+            )
+            self.candidate_disease_coverage_label.setText(
+                format_coverage_percent_display(
+                    correction.corrected_candidate_disease_coverage_percent
+                )
+            )
+            self.non_candidate_leaf_area_label.setText(
+                format_area_in2_display(correction.corrected_non_candidate_leaf_area_in2)
+            )
+            summary = format_automatic_candidate_summary(sample)
+            self.automatic_result_label.setText(summary or "")
+            self.automatic_result_label.setVisible(bool(summary))
+        elif phase5_result_is_current(
+            sample,
+            calibration_grid_matches=calibration_grid_matches,
+        ):
             measurement = sample.candidate_disease_measurement
             assert measurement is not None
             self.total_leaf_area_label.setText(
@@ -410,16 +607,29 @@ class SampleInspectorPanel(QWidget):
             self.non_candidate_leaf_area_label.setText(
                 format_area_in2_display(measurement.non_candidate_leaf_area_in2)
             )
+            self.automatic_result_label.hide()
+            self.automatic_result_label.setText("")
         else:
             placeholder = phase5_measurement_row_placeholder(
                 sample,
                 calculation_failed=calculation_failed,
+                calibration_grid_matches=calibration_grid_matches,
             )
             self._set_measurement_placeholder(placeholder)
+            self.automatic_result_label.hide()
+            self.automatic_result_label.setText("")
+
+        review_message = correction_review_message(
+            sample,
+            calibration_grid_matches=calibration_grid_matches,
+        )
+        if review_message:
+            warnings = f"{warnings}\n{review_message}" if warnings else review_message
 
         label, enabled, hint = _calculation_button_state(
             sample,
             image_available=image_available,
+            calibration_grid_matches=calibration_grid_matches,
         )
         self.set_calculation_button_state(label=label, enabled=enabled, hint=hint)
         self.show_preview_warnings(warnings)
@@ -427,6 +637,15 @@ class SampleInspectorPanel(QWidget):
         self.set_calibration_controls_enabled(True)
         self.set_view_controls_enabled(True)
         self.set_save_calibration_enabled(False)
+        if not self._correction_active:
+            self.correct_disease_mask_button.setVisible(True)
+            self.correct_disease_mask_button.setEnabled(
+                can_start_disease_mask_correction(
+                    sample,
+                    image_available=image_available,
+                    calibration_grid_matches=calibration_grid_matches,
+                )
+            )
 
 
 def build_inspector_panel(parent: QWidget | None = None) -> SampleInspectorPanel:
@@ -482,5 +701,24 @@ def build_main_layout(window: MainWindow) -> None:
 
     status_bar = QStatusBar(window)
     status_bar.showMessage("Ready")
+    progress_label = QLabel("", status_bar)
+    progress_label.setObjectName("workProgressLabel")
+    progress_label.hide()
+    progress_bar = QProgressBar(status_bar)
+    progress_bar.setObjectName("workProgressBar")
+    progress_bar.setTextVisible(False)
+    progress_bar.setFixedWidth(168)
+    progress_bar.setFixedHeight(12)
+    progress_bar.setRange(0, 1)
+    progress_bar.setValue(0)
+    # The macOS progress style does not draw a busy indicator.
+    fusion = QStyleFactory.create("Fusion")
+    if fusion is not None:
+        progress_bar.setStyle(fusion)
+    progress_bar.hide()
+    status_bar.addPermanentWidget(progress_label)
+    status_bar.addPermanentWidget(progress_bar)
     window.setStatusBar(status_bar)
     window.status_bar = status_bar
+    window.work_progress_label = progress_label
+    window.work_progress_bar = progress_bar

@@ -208,12 +208,12 @@ class TestExplorerContextMenus(unittest.TestCase):
         labels = [action.text() for action in menu.actions()]
         self.assertEqual(labels, ["Open Workspace Folder"])
 
-    def test_empty_space_menu_contains_new_condition_group_only(self) -> None:
+    def test_empty_space_menu_keeps_new_group_and_open_folder(self) -> None:
         tree = ExplorerTreeWidget()
         menu = __import__("PySide6.QtWidgets", fromlist=["QMenu"]).QMenu()
         tree._add_empty_space_menu_actions(menu)
         labels = [action.text() for action in menu.actions()]
-        self.assertEqual(labels, ["New Condition Group"])
+        self.assertEqual(labels, ["New Condition Group", "Open Workspace Folder"])
 
     def test_condition_group_menu_actions_are_group_specific(self) -> None:
         tree = ExplorerTreeWidget()
@@ -308,32 +308,40 @@ class TestExplorerDragAndDrop(unittest.TestCase):
         return tmp, workspace, imported[0], tree
 
     def _node_items(self, tree: ExplorerTreeWidget):
-        root = tree.topLevelItem(0)
-        group_item = root.child(0)
+        group_item = None
         sample_item = None
-        for index in range(group_item.childCount()):
-            child = group_item.child(index)
-            if tree.item_node_type(child) == "sample":
-                sample_item = child
-                break
-        return root, group_item, sample_item
+        for index in range(tree.topLevelItemCount()):
+            item = tree.topLevelItem(index)
+            if item is None or tree.item_node_type(item) != "condition_group":
+                continue
+            if group_item is None:
+                group_item = item
+            for child_index in range(item.childCount()):
+                child = item.child(child_index)
+                if tree.item_node_type(child) == "sample" and sample_item is None:
+                    sample_item = child
+        return group_item, sample_item
 
     def test_sample_items_are_draggable(self) -> None:
         holder, _workspace, _sample, tree = self._workspace_with_sample()
         try:
-            _root, _group, sample_item = self._node_items(tree)
+            _group, sample_item = self._node_items(tree)
             self.assertIsNotNone(sample_item)
             self.assertTrue(sample_item.flags() & Qt.ItemFlag.ItemIsDragEnabled)
         finally:
             _destroy_explorer_tree(tree)
             holder.cleanup()
 
-    def test_workspace_and_group_nodes_are_not_draggable(self) -> None:
-        holder, _workspace, _sample, tree = self._workspace_with_sample()
+    def test_group_nodes_are_not_draggable(self) -> None:
+        holder, workspace, _sample, tree = self._workspace_with_sample()
         try:
-            root, group_item, _sample_item = self._node_items(tree)
-            self.assertFalse(root.flags() & Qt.ItemFlag.ItemIsDragEnabled)
+            group_item, _sample_item = self._node_items(tree)
             self.assertFalse(group_item.flags() & Qt.ItemFlag.ItemIsDragEnabled)
+            labels = [
+                tree.topLevelItem(index).text(0)
+                for index in range(tree.topLevelItemCount())
+            ]
+            self.assertNotIn(workspace.display_name, labels)
         finally:
             _destroy_explorer_tree(tree)
             holder.cleanup()
@@ -341,19 +349,19 @@ class TestExplorerDragAndDrop(unittest.TestCase):
     def test_condition_groups_accept_sample_drops(self) -> None:
         holder, _workspace, _sample, tree = self._workspace_with_sample()
         try:
-            _root, group_item, _sample_item = self._node_items(tree)
+            group_item, _sample_item = self._node_items(tree)
             self.assertTrue(group_item.flags() & Qt.ItemFlag.ItemIsDropEnabled)
             self.assertTrue(tree.accepts_sample_drop_on_item(group_item))
         finally:
             _destroy_explorer_tree(tree)
             holder.cleanup()
 
-    def test_samples_and_workspace_reject_sample_drops(self) -> None:
+    def test_samples_reject_sample_drops(self) -> None:
         holder, workspace, sample, tree = self._workspace_with_sample()
         try:
-            root, group_item, sample_item = self._node_items(tree)
+            group_item, sample_item = self._node_items(tree)
             self.assertFalse(sample_item.flags() & Qt.ItemFlag.ItemIsDropEnabled)
-            self.assertFalse(tree.accepts_sample_drop_on_item(root))
+            self.assertNotEqual(tree.item_node_type(group_item), "workspace")
             self.assertFalse(tree.accepts_sample_drop_on_item(None))
             self.assertFalse(
                 tree.accepts_sample_drop_on_item(
@@ -379,11 +387,10 @@ class TestExplorerDragAndDrop(unittest.TestCase):
         try:
             destination_group = create_condition_group(workspace, display_name="Target")
             tree.refresh_workspace(workspace)
-            _root, _group, sample_item = self._node_items(tree)
+            _group, sample_item = self._node_items(tree)
             dest_item = None
-            root = tree.topLevelItem(0)
-            for index in range(root.childCount()):
-                child = root.child(index)
+            for index in range(tree.topLevelItemCount()):
+                child = tree.topLevelItem(index)
                 if tree.item_node_id(child) == destination_group.condition_group_id:
                     dest_item = child
                     break
@@ -464,9 +471,8 @@ class TestExplorerDragTargetResolution(unittest.TestCase):
         )
 
     def _group_item(self, tree: ExplorerTreeWidget, group_id: str) -> QTreeWidgetItem:
-        root = tree.topLevelItem(0)
-        for index in range(root.childCount()):
-            child = root.child(index)
+        for index in range(tree.topLevelItemCount()):
+            child = tree.topLevelItem(index)
             if tree.item_node_id(child) == group_id:
                 return child
         raise AssertionError(f"Missing group item: {group_id}")
@@ -476,10 +482,11 @@ class TestExplorerDragTargetResolution(unittest.TestCase):
         tree: ExplorerTreeWidget,
         sample_id: str,
     ) -> QTreeWidgetItem:
-        root = tree.topLevelItem(0)
-        match = tree._find_sample_item(root, sample_id)
-        assert match is not None
-        return match
+        for index in range(tree.topLevelItemCount()):
+            match = tree._find_sample_item(tree.topLevelItem(index), sample_id)
+            if match is not None:
+                return match
+        raise AssertionError(f"Missing sample item: {sample_id}")
 
     def _mime_for_sample(self, sample_id: str):
         from PySide6.QtCore import QMimeData
@@ -650,18 +657,29 @@ class TestExplorerDragTargetResolution(unittest.TestCase):
             _destroy_explorer_tree(tree)
             holder.cleanup()
 
-    def test_workspace_root_is_not_accepted(self) -> None:
-        holder, _workspace, _source_group, _dest_group, source_samples, _dest_sample, tree = (
+    def test_categories_are_top_level_without_a_workspace_row(self) -> None:
+        holder, workspace, source_group, dest_group, source_samples, _dest_sample, tree = (
             self._multi_group_workspace()
         )
         try:
-            root = tree.topLevelItem(0)
-            group_id, highlight = tree.resolve_drag_destination_group(
-                root,
-                dragging_sample_id=source_samples[0].sample_id,
+            labels = [
+                tree.topLevelItem(index).text(0)
+                for index in range(tree.topLevelItemCount())
+            ]
+            self.assertEqual(
+                labels,
+                [source_group.display_name, dest_group.display_name],
             )
-            self.assertIsNone(group_id)
-            self.assertIsNone(highlight)
+            self.assertNotIn(workspace.display_name, labels)
+            for index in range(tree.topLevelItemCount()):
+                item = tree.topLevelItem(index)
+                self.assertEqual(tree.item_node_type(item), "condition_group")
+                self.assertIsNone(item.parent())
+            sample_item = self._sample_item(tree, source_samples[0].sample_id)
+            self.assertIs(
+                sample_item.parent(),
+                self._group_item(tree, source_group.condition_group_id),
+            )
         finally:
             _destroy_explorer_tree(tree)
             holder.cleanup()
@@ -1157,6 +1175,354 @@ class TestExplorerDragPositionResolution(unittest.TestCase):
         finally:
             _destroy_explorer_tree(tree)
             holder.cleanup()
+
+
+class TestExplorerExternalFileDrop(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        _ensure_qt_app()
+
+    def _helper(self) -> TestExplorerDragTargetResolution:
+        return TestExplorerDragTargetResolution()
+
+    def _position_on_item(
+        self,
+        tree: ExplorerTreeWidget,
+        item: QTreeWidgetItem,
+        *,
+        region: str,
+    ) -> QPoint:
+        return TestExplorerDragPositionResolution()._position_on_item(
+            tree,
+            item,
+            region=region,
+        )
+
+    def _mime_for_files(self, paths: list[Path]):
+        from PySide6.QtCore import QMimeData, QUrl
+
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(path)) for path in paths])
+        return mime
+
+    def _drag_move_event(self, tree: ExplorerTreeWidget, mime, position: QPoint):
+        from PySide6.QtGui import QDragMoveEvent
+
+        event = QDragMoveEvent(
+            position,
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        tree.dragMoveEvent(event)
+        return event
+
+    def _drop_event(self, tree: ExplorerTreeWidget, mime, position: QPoint):
+        from PySide6.QtGui import QDropEvent
+
+        event = QDropEvent(
+            position,
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        tree.dropEvent(event)
+        return event
+
+    def test_file_drag_over_group_row_highlights_and_accepts_copy(self) -> None:
+        holder, _workspace, _source_group, dest_group, _source_samples, _dest_sample, tree = (
+            self._helper()._multi_group_workspace()
+        )
+        try:
+            dest_item = self._helper()._group_item(tree, dest_group.condition_group_id)
+            position = self._position_on_item(tree, dest_item, region="center")
+            mime = self._mime_for_files([Path("/tmp/leaf.png")])
+            event = self._drag_move_event(tree, mime, position)
+            self.assertTrue(event.isAccepted())
+            self.assertEqual(event.dropAction(), Qt.DropAction.CopyAction)
+            self.assertIs(tree.drop_highlight_item(), dest_item)
+        finally:
+            _destroy_explorer_tree(tree)
+            holder.cleanup()
+
+    def test_file_drag_over_blank_group_row_still_targets_that_group(self) -> None:
+        holder, _workspace, _source_group, dest_group, _source_samples, _dest_sample, tree = (
+            self._helper()._multi_group_workspace()
+        )
+        try:
+            dest_item = self._helper()._group_item(tree, dest_group.condition_group_id)
+            position = self._position_on_item(tree, dest_item, region="right")
+            with patch.object(tree, "itemAt", return_value=None):
+                group_id, highlight = tree.resolve_file_drop_group_at_position(position)
+            self.assertEqual(group_id, dest_group.condition_group_id)
+            self.assertIs(highlight, dest_item)
+        finally:
+            _destroy_explorer_tree(tree)
+            holder.cleanup()
+
+    def test_file_drag_rejects_sample_workspace_and_hint_rows(self) -> None:
+        holder, workspace, _source_group, _dest_group, _source_samples, dest_sample, tree = (
+            self._helper()._multi_group_workspace()
+        )
+        try:
+            empty_group = create_condition_group(workspace, display_name="Empty Group")
+            tree.refresh_workspace(workspace)
+            mime = self._mime_for_files([Path("/tmp/leaf.png")])
+            sample_item = self._helper()._sample_item(tree, dest_sample.sample_id)
+            hint_item = self._helper()._group_item(tree, empty_group.condition_group_id).child(0)
+            targets = (
+                self._position_on_item(tree, sample_item, region="center"),
+                self._position_on_item(tree, sample_item, region="right"),
+                self._position_on_item(tree, hint_item, region="center"),
+                QPoint(8, tree.viewport().height() - 2),
+            )
+            for position in targets:
+                event = self._drag_move_event(tree, mime, position)
+                self.assertFalse(event.isAccepted())
+                self.assertIsNone(tree.drop_highlight_item())
+        finally:
+            _destroy_explorer_tree(tree)
+            holder.cleanup()
+
+    def test_file_drop_on_group_emits_that_group_and_clears_highlight(self) -> None:
+        holder, _workspace, source_group, dest_group, _source_samples, _dest_sample, tree = (
+            self._helper()._multi_group_workspace()
+        )
+        try:
+            dropped: list[tuple[str, list[str]]] = []
+            tree.files_dropped_on_group.connect(
+                lambda group_id, paths: dropped.append((group_id, list(paths)))
+            )
+            dest_item = self._helper()._group_item(tree, dest_group.condition_group_id)
+            position = self._position_on_item(tree, dest_item, region="center")
+            paths = [Path("/tmp/a leaf.png"), Path("/tmp/b.png")]
+            mime = self._mime_for_files(paths)
+            self._drag_move_event(tree, mime, position)
+            self.assertIs(tree.drop_highlight_item(), dest_item)
+            event = self._drop_event(tree, mime, position)
+            self.assertTrue(event.isAccepted())
+            self.assertEqual(event.dropAction(), Qt.DropAction.CopyAction)
+            self.assertEqual(
+                dropped,
+                [
+                    (
+                        dest_group.condition_group_id,
+                        [str(path) for path in paths],
+                    )
+                ],
+            )
+            self.assertNotEqual(dropped[0][0], source_group.condition_group_id)
+            self.assertIsNone(tree.drop_highlight_item())
+        finally:
+            _destroy_explorer_tree(tree)
+            holder.cleanup()
+
+    def test_file_drop_on_empty_space_sample_and_near_gap_is_rejected(self) -> None:
+        from PySide6.QtCore import QModelIndex
+
+        holder, _workspace, _source_group, dest_group, source_samples, dest_sample, tree = (
+            self._helper()._multi_group_workspace()
+        )
+        try:
+            dropped: list[tuple[str, list[str]]] = []
+            tree.files_dropped_on_group.connect(
+                lambda group_id, paths: dropped.append((group_id, list(paths)))
+            )
+            mime = self._mime_for_files([Path("/tmp/leaf.png")])
+            sample_item = self._helper()._sample_item(tree, dest_sample.sample_id)
+            sample_position = self._position_on_item(tree, sample_item, region="center")
+            self._drag_move_event(tree, mime, sample_position)
+            sample_drop = self._drop_event(tree, mime, sample_position)
+            self.assertFalse(sample_drop.isAccepted())
+
+            empty_position = QPoint(8, tree.viewport().height() - 2)
+            self._drag_move_event(tree, mime, empty_position)
+            empty_drop = self._drop_event(tree, mime, empty_position)
+            self.assertFalse(empty_drop.isAccepted())
+
+            last_bottom = max(
+                tree.visualItemRect(item).bottom() for item in tree._iter_visible_items()
+            )
+            near_gap = QPoint(tree.viewport().width() // 2, last_bottom + 4)
+            self.assertLess(near_gap.y(), tree.viewport().height())
+            with patch.object(tree, "itemAt", return_value=None):
+                with patch.object(tree, "indexAt", return_value=QModelIndex()):
+                    file_group_id, _highlight = tree.resolve_file_drop_group_at_position(near_gap)
+                    sample_group_id, _sample_highlight = tree.resolve_drag_destination_group_at_position(
+                        near_gap,
+                        dragging_sample_id=source_samples[0].sample_id,
+                    )
+            self.assertIsNone(file_group_id)
+            self.assertIsNotNone(sample_group_id)
+            self.assertEqual(dropped, [])
+            self.assertIsNone(tree.drop_highlight_item())
+        finally:
+            _destroy_explorer_tree(tree)
+            holder.cleanup()
+
+    def test_file_highlight_clears_when_drag_leaves(self) -> None:
+        from PySide6.QtGui import QDragLeaveEvent
+
+        holder, _workspace, _source_group, dest_group, _source_samples, _dest_sample, tree = (
+            self._helper()._multi_group_workspace()
+        )
+        try:
+            dest_item = self._helper()._group_item(tree, dest_group.condition_group_id)
+            position = self._position_on_item(tree, dest_item, region="center")
+            mime = self._mime_for_files([Path("/tmp/leaf.png")])
+            self._drag_move_event(tree, mime, position)
+            self.assertIs(tree.drop_highlight_item(), dest_item)
+            tree.dragLeaveEvent(QDragLeaveEvent())
+            self.assertIsNone(tree.drop_highlight_item())
+        finally:
+            _destroy_explorer_tree(tree)
+            holder.cleanup()
+
+    def test_remote_urls_are_rejected_on_drag_enter(self) -> None:
+        from PySide6.QtCore import QMimeData, QUrl
+        from PySide6.QtGui import QDragEnterEvent
+
+        holder, _workspace, _source_group, dest_group, _source_samples, _dest_sample, tree = (
+            self._helper()._multi_group_workspace()
+        )
+        try:
+            dest_item = self._helper()._group_item(tree, dest_group.condition_group_id)
+            position = self._position_on_item(tree, dest_item, region="center")
+            mime = QMimeData()
+            mime.setUrls([QUrl("https://example.com/leaf.png")])
+            event = QDragEnterEvent(
+                position,
+                Qt.DropAction.CopyAction,
+                mime,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            tree.dragEnterEvent(event)
+            self.assertFalse(event.isAccepted())
+            self.assertIsNone(tree.drop_highlight_item())
+        finally:
+            _destroy_explorer_tree(tree)
+            holder.cleanup()
+
+    def test_sample_mime_keeps_internal_move_when_urls_are_also_present(self) -> None:
+        from PySide6.QtCore import QUrl
+
+        holder, _workspace, _source_group, dest_group, source_samples, _dest_sample, tree = (
+            self._helper()._multi_group_workspace()
+        )
+        try:
+            moves: list[tuple[str, str]] = []
+            dropped: list[tuple[str, list[str]]] = []
+            tree.sample_move_requested.connect(
+                lambda sample_id, group_id: moves.append((sample_id, group_id))
+            )
+            tree.files_dropped_on_group.connect(
+                lambda group_id, paths: dropped.append((group_id, list(paths)))
+            )
+            from PySide6.QtGui import QDropEvent
+
+            dest_item = self._helper()._group_item(tree, dest_group.condition_group_id)
+            position = self._position_on_item(tree, dest_item, region="center")
+            mime = self._helper()._mime_for_sample(source_samples[0].sample_id)
+            mime.setUrls([QUrl.fromLocalFile("/tmp/leaf.png")])
+            event = QDropEvent(
+                position,
+                Qt.DropAction.MoveAction,
+                mime,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            tree.dropEvent(event)
+            self.assertTrue(event.isAccepted())
+            self.assertEqual(event.dropAction(), Qt.DropAction.MoveAction)
+            self.assertEqual(
+                moves,
+                [(source_samples[0].sample_id, dest_group.condition_group_id)],
+            )
+            self.assertEqual(dropped, [])
+        finally:
+            _destroy_explorer_tree(tree)
+            holder.cleanup()
+
+    def test_main_window_drop_imports_only_into_the_target_group(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = initialize_workspace(Path(tmp) / "ws", display_name="File Drop")
+            target = create_condition_group(workspace, display_name="Treatment")
+            other = create_condition_group(workspace, display_name="Control")
+            image_a = Path(tmp) / "a leaf.png"
+            image_b = Path(tmp) / "b.png"
+            for image_path in (image_a, image_b):
+                cv2.imwrite(
+                    str(image_path),
+                    cv2.cvtColor(_make_synthetic_leaf_image(), cv2.COLOR_RGB2BGR),
+                )
+
+            window = _main_window_without_startup_default()
+            window.show()
+            window._set_workspace(workspace)
+            QApplication.processEvents()
+            tree = window.explorer_tree
+            target_item = None
+            for index in range(tree.topLevelItemCount()):
+                child = tree.topLevelItem(index)
+                if tree.item_node_id(child) == target.condition_group_id:
+                    target_item = child
+                    break
+            assert target_item is not None
+            position = self._position_on_item(tree, target_item, region="center")
+            event = self._drop_event(tree, self._mime_for_files([image_a, image_b]), position)
+
+            self.assertTrue(event.isAccepted())
+            imported = workspace.samples_for_group(target.condition_group_id)
+            self.assertEqual(
+                [sample.display_name for sample in imported],
+                ["a leaf.png", "b.png"],
+            )
+            self.assertEqual(workspace.samples_for_group(other.condition_group_id), [])
+            self.assertTrue(
+                all(target.condition_group_id in sample.raw_image_path for sample in imported)
+            )
+            self.assertEqual(window._selected_sample_id, imported[-1].sample_id)
+            window.close()
+
+    def test_main_window_drop_reuses_import_error_handling(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = initialize_workspace(Path(tmp) / "ws", display_name="File Drop")
+            target = create_condition_group(workspace, display_name="Treatment")
+            notes = Path(tmp) / "notes.txt"
+            notes.write_text("not an image", encoding="utf-8")
+            folder = Path(tmp) / "batch"
+            folder.mkdir()
+
+            window = _main_window_without_startup_default()
+            window.show()
+            window._set_workspace(workspace)
+            QApplication.processEvents()
+            tree = window.explorer_tree
+            target_item = None
+            for index in range(tree.topLevelItemCount()):
+                child = tree.topLevelItem(index)
+                if tree.item_node_id(child) == target.condition_group_id:
+                    target_item = child
+                    break
+            assert target_item is not None
+            position = self._position_on_item(tree, target_item, region="center")
+
+            with patch("neopest.gui.QMessageBox.critical") as critical:
+                text_drop = self._drop_event(tree, self._mime_for_files([notes]), position)
+                folder_drop = self._drop_event(tree, self._mime_for_files([folder]), position)
+
+            self.assertTrue(text_drop.isAccepted())
+            self.assertTrue(folder_drop.isAccepted())
+            self.assertEqual(workspace.samples, [])
+            self.assertEqual(critical.call_count, 2)
+            self.assertEqual(critical.call_args_list[0].args[1], "Import Error")
+            self.assertIn("Unsupported image format", critical.call_args_list[0].args[2])
+            self.assertEqual(critical.call_args_list[1].args[1], "Import Error")
+            self.assertIn("Image file not found", critical.call_args_list[1].args[2])
+            window.close()
 
 
 class TestExplorerMoveIntegration(unittest.TestCase):

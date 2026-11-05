@@ -124,6 +124,7 @@ class ExplorerTreeWidget(QTreeWidget):
     remove_sample_requested = Signal(str)
     reveal_sample_image_requested = Signal(str)
     sample_move_requested = Signal(str, str)
+    files_dropped_on_group = Signal(str, list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -148,11 +149,13 @@ class ExplorerTreeWidget(QTreeWidget):
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.itemSelectionChanged.connect(self._on_selection_changed)
         self._drop_highlight_item: QTreeWidgetItem | None = None
+        self._workspace_open = False
         self.refresh_placeholder()
 
     def refresh_placeholder(self, workspace_label: str = "No workspace open") -> None:
         self.blockSignals(True)
         self.clear()
+        self._workspace_open = False
         root = QTreeWidgetItem([workspace_label])
         root.setFlags(root.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self.addTopLevelItem(root)
@@ -170,80 +173,67 @@ class ExplorerTreeWidget(QTreeWidget):
             self.refresh_placeholder()
             return
 
-        root = QTreeWidgetItem([workspace.display_name])
-        root.setData(0, NODE_TYPE_ROLE, "workspace")
-        root.setData(0, NODE_ID_ROLE, workspace.workspace_id)
-        root.setFlags(
-            (root.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            & ~Qt.ItemFlag.ItemIsDragEnabled
-            & ~Qt.ItemFlag.ItemIsDropEnabled
-        )
-        root.setToolTip(0, "Workspace root")
-        self.addTopLevelItem(root)
-
+        self._workspace_open = True
         if not workspace.condition_groups:
             hint = QTreeWidgetItem(["(no condition groups)"])
             hint.setFlags(hint.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-            root.addChild(hint)
+            self.addTopLevelItem(hint)
         else:
             for group in workspace.condition_groups:
-                group_item = QTreeWidgetItem([group.display_name])
-                group_item.setData(0, NODE_TYPE_ROLE, "condition_group")
-                group_item.setData(0, NODE_ID_ROLE, group.condition_group_id)
-                group_item.setFlags(
-                    (group_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    | Qt.ItemFlag.ItemIsDropEnabled
-                )
-                group_item.setFlags(
-                    group_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled
-                )
-                group_item.setToolTip(0, "Condition group")
-                root.addChild(group_item)
-
-                group_samples = workspace.samples_for_group(group.condition_group_id)
-                if not group_samples:
-                    hint = QTreeWidgetItem(["(no samples)"])
-                    hint.setFlags(hint.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-                    group_item.addChild(hint)
-                else:
-                    for sample in sorted(group_samples, key=lambda item: item.display_name.lower()):
-                        sample_item = QTreeWidgetItem([sample.display_name])
-                        sample_item.setData(0, NODE_TYPE_ROLE, "sample")
-                        sample_item.setData(0, NODE_ID_ROLE, sample.sample_id)
-                        sample_item.setFlags(
-                            (sample_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                            | Qt.ItemFlag.ItemIsDragEnabled
-                        )
-                        sample_item.setFlags(
-                            sample_item.flags() & ~Qt.ItemFlag.ItemIsDropEnabled
-                        )
-                        sample_item.setToolTip(0, "Leaf image sample")
-                        group_item.addChild(sample_item)
+                group_item = self._make_condition_group_item(group.display_name, group.condition_group_id)
+                self.addTopLevelItem(group_item)
+                self._add_group_children(group_item, workspace)
 
         self.expandAll()
         self.blockSignals(False)
 
+    def _make_condition_group_item(self, display_name: str, group_id: str) -> QTreeWidgetItem:
+        group_item = QTreeWidgetItem([display_name])
+        group_item.setData(0, NODE_TYPE_ROLE, "condition_group")
+        group_item.setData(0, NODE_ID_ROLE, group_id)
+        group_item.setFlags(
+            (group_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            | Qt.ItemFlag.ItemIsDropEnabled
+        )
+        group_item.setFlags(group_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
+        group_item.setToolTip(0, "Condition group")
+        return group_item
+
+    def _add_group_children(
+        self,
+        group_item: QTreeWidgetItem,
+        workspace: WorkspaceMetadata,
+    ) -> None:
+        group_id = self.item_node_id(group_item)
+        group_samples = workspace.samples_for_group(group_id or "")
+        if not group_samples:
+            hint = QTreeWidgetItem(["(no samples)"])
+            hint.setFlags(hint.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            group_item.addChild(hint)
+            return
+        for sample in sorted(group_samples, key=lambda item: item.display_name.lower()):
+            sample_item = QTreeWidgetItem([sample.display_name])
+            sample_item.setData(0, NODE_TYPE_ROLE, "sample")
+            sample_item.setData(0, NODE_ID_ROLE, sample.sample_id)
+            sample_item.setFlags(
+                (sample_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                | Qt.ItemFlag.ItemIsDragEnabled
+            )
+            sample_item.setFlags(sample_item.flags() & ~Qt.ItemFlag.ItemIsDropEnabled)
+            sample_item.setToolTip(0, "Leaf image sample")
+            group_item.addChild(sample_item)
+
     def select_sample(self, sample_id: str) -> None:
         for index in range(self.topLevelItemCount()):
-            root = self.topLevelItem(index)
-            if root is None:
-                continue
-            match = self._find_sample_item(root, sample_id)
+            match = self._find_sample_item(self.topLevelItem(index), sample_id)
             if match is not None:
                 self.setCurrentItem(match)
                 return
 
     def expand_condition_group(self, condition_group_id: str) -> None:
-        root = self._workspace_root_item()
-        if root is None:
-            return
-        for group_index in range(root.childCount()):
-            group_item = root.child(group_index)
-            if group_item is None:
-                continue
+        for group_item in self._iter_condition_group_items():
             if self.item_node_id(group_item) == condition_group_id:
                 group_item.setExpanded(True)
-                root.setExpanded(True)
                 return
 
     def item_node_type(self, item: QTreeWidgetItem | None) -> str | None:
@@ -258,33 +248,42 @@ class ExplorerTreeWidget(QTreeWidget):
         value = item.data(0, NODE_ID_ROLE)
         return str(value) if value else None
 
-    def _workspace_root_item(self) -> QTreeWidgetItem | None:
-        if self.topLevelItemCount() == 0:
-            return None
-        root = self.topLevelItem(0)
-        if root is not None and self.item_node_type(root) == "workspace":
-            return root
-        return None
+    def _iter_condition_group_items(self) -> Iterator[QTreeWidgetItem]:
+        for index in range(self.topLevelItemCount()):
+            item = self.topLevelItem(index)
+            if item is not None and self.item_node_type(item) == "condition_group":
+                yield item
 
     def _find_sample_item(
         self,
-        parent: QTreeWidgetItem,
+        parent: QTreeWidgetItem | None,
         sample_id: str,
     ) -> QTreeWidgetItem | None:
-        for group_index in range(parent.childCount()):
-            group_item = parent.child(group_index)
-            if group_item is None:
-                continue
-            for sample_index in range(group_item.childCount()):
-                sample_item = group_item.child(sample_index)
-                if sample_item is None:
-                    continue
-                if (
-                    sample_item.data(0, NODE_TYPE_ROLE) == "sample"
-                    and sample_item.data(0, NODE_ID_ROLE) == sample_id
-                ):
-                    return sample_item
+        if parent is None:
+            return None
+        if (
+            parent.data(0, NODE_TYPE_ROLE) == "sample"
+            and parent.data(0, NODE_ID_ROLE) == sample_id
+        ):
+            return parent
+        for index in range(parent.childCount()):
+            match = self._find_sample_item(parent.child(index), sample_id)
+            if match is not None:
+                return match
         return None
+
+    def _local_file_paths_from_mime(self, mime_data) -> list[str] | None:
+        """Return local file paths from a file-URL drag, ignoring remote URLs."""
+        if mime_data is None or not mime_data.hasUrls():
+            return None
+        paths: list[str] = []
+        for url in mime_data.urls():
+            if not url.isLocalFile():
+                continue
+            local_path = url.toLocalFile()
+            if local_path:
+                paths.append(local_path)
+        return paths or None
 
     def _sample_id_from_mime(self, mime_data) -> str | None:
         if mime_data is None:
@@ -305,13 +304,7 @@ class ExplorerTreeWidget(QTreeWidget):
         return None
 
     def _find_sample_parent_group_id(self, sample_id: str) -> str | None:
-        root = self._workspace_root_item()
-        if root is None:
-            return None
-        for group_index in range(root.childCount()):
-            group_item = root.child(group_index)
-            if group_item is None:
-                continue
+        for group_item in self._iter_condition_group_items():
             for sample_index in range(group_item.childCount()):
                 sample_item = group_item.child(sample_index)
                 if sample_item is None:
@@ -397,7 +390,12 @@ class ExplorerTreeWidget(QTreeWidget):
             return rect
         return QRect(0, rect.top(), max(self.viewport().width(), rect.right()), rect.height())
 
-    def _item_at_viewport_position(self, position: QPoint) -> QTreeWidgetItem | None:
+    def _item_at_viewport_position(
+        self,
+        position: QPoint,
+        *,
+        snap_near_rows: bool = True,
+    ) -> QTreeWidgetItem | None:
         item = self.itemAt(position)
         if item is not None:
             return item
@@ -417,6 +415,9 @@ class ExplorerTreeWidget(QTreeWidget):
         if row_hits:
             _depth, best_item = max(row_hits, key=lambda pair: pair[0])
             return best_item
+
+        if not snap_near_rows:
+            return None
 
         nearest_item: QTreeWidgetItem | None = None
         nearest_distance: int | None = None
@@ -468,6 +469,30 @@ class ExplorerTreeWidget(QTreeWidget):
         )
         return group_id
 
+    def resolve_file_drop_group_from_item(
+        self,
+        item: QTreeWidgetItem | None,
+    ) -> tuple[str | None, QTreeWidgetItem | None]:
+        """Map a tree item to a file-import target when it is a condition-group row."""
+        if item is None or self.item_node_type(item) != "condition_group":
+            return None, None
+        group_id = self.item_node_id(item)
+        if not group_id:
+            return None, None
+        return group_id, item
+
+    def resolve_file_drop_group_at_position(
+        self,
+        position: QPoint,
+    ) -> tuple[str | None, QTreeWidgetItem | None]:
+        """Map a viewport position to a condition-group row.
+
+        Gap snapping used for internal sample moves is not applied. Empty space
+        and non-group rows are not import targets.
+        """
+        item = self._item_at_viewport_position(position, snap_near_rows=False)
+        return self.resolve_file_drop_group_from_item(item)
+
     def accepts_sample_drop_on_item(
         self,
         item: QTreeWidgetItem | None,
@@ -502,7 +527,7 @@ class ExplorerTreeWidget(QTreeWidget):
     def _show_context_menu(self, position: QPoint) -> None:
         item = self.itemAt(position)
         if item is None:
-            if self._workspace_root_item() is not None:
+            if self._workspace_open:
                 menu = QMenu(self)
                 self._add_empty_space_menu_actions(menu)
                 if not menu.isEmpty():
@@ -533,6 +558,7 @@ class ExplorerTreeWidget(QTreeWidget):
         action.setToolTip("Create a new condition group in this workspace")
         action.triggered.connect(self.new_condition_group_requested.emit)
         menu.addAction(action)
+        self._add_workspace_menu_actions(menu)
 
     def _add_workspace_menu_actions(self, menu: QMenu) -> None:
         action = QAction("Open Workspace Folder", self)
@@ -639,6 +665,50 @@ class ExplorerTreeWidget(QTreeWidget):
         event.setDropAction(Qt.DropAction.MoveAction)
         event.accept()
 
+    def _accept_file_copy_action(self, event) -> None:
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+
+    def update_file_drag_hover_at_position(self, position: QPoint) -> bool:
+        """Highlight the condition-group row under a file drag, if any."""
+        group_id, group_item = self.resolve_file_drop_group_at_position(position)
+        if group_id is None:
+            self._clear_drop_highlight()
+            return False
+        self._set_drop_highlight(group_item)
+        return True
+
+    def update_file_drag_hover_for_item(self, item: QTreeWidgetItem | None) -> bool:
+        """Highlight ``item`` when it is a condition-group file-drop target."""
+        group_id, group_item = self.resolve_file_drop_group_from_item(item)
+        if group_id is None:
+            self._clear_drop_highlight()
+            return False
+        self._set_drop_highlight(group_item)
+        return True
+
+    def drop_files_at_position(self, position: QPoint, paths: list[str]) -> bool:
+        """Emit a file import for the condition-group row at ``position``."""
+        self._clear_drop_highlight()
+        group_id, _group_item = self.resolve_file_drop_group_at_position(position)
+        if group_id is None or not paths:
+            return False
+        self.files_dropped_on_group.emit(group_id, list(paths))
+        return True
+
+    def drop_files_on_item(
+        self,
+        item: QTreeWidgetItem | None,
+        paths: list[str],
+    ) -> bool:
+        """Emit a file import when ``item`` is a condition-group row."""
+        self._clear_drop_highlight()
+        group_id, _group_item = self.resolve_file_drop_group_from_item(item)
+        if group_id is None or not paths:
+            return False
+        self.files_dropped_on_group.emit(group_id, list(paths))
+        return True
+
     def update_drag_hover_at_position(
         self,
         position: QPoint,
@@ -722,27 +792,42 @@ class ExplorerTreeWidget(QTreeWidget):
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt API
         sample_id = self._sample_id_from_mime(event.mimeData())
-        if sample_id is None:
-            event.ignore()
+        position = self._viewport_position_from_event(event)
+        if sample_id is not None:
+            self._accept_sample_move_action(event)
+            self.update_drag_hover_at_position(
+                position,
+                dragging_sample_id=sample_id,
+            )
             return
-        self._accept_sample_move_action(event)
-        self.update_drag_hover_at_position(
-            self._viewport_position_from_event(event),
-            dragging_sample_id=sample_id,
-        )
+
+        if self._local_file_paths_from_mime(event.mimeData()):
+            self._accept_file_copy_action(event)
+            self.update_file_drag_hover_at_position(position)
+            return
+
+        event.ignore()
 
     def dragMoveEvent(self, event) -> None:  # noqa: N802 - Qt API
         sample_id = self._sample_id_from_mime(event.mimeData())
-        if sample_id is None:
+        position = self._viewport_position_from_event(event)
+        if sample_id is not None:
+            if self.update_drag_hover_at_position(
+                position,
+                dragging_sample_id=sample_id,
+            ):
+                self._accept_sample_move_action(event)
+                return
             event.ignore()
             self._clear_drop_highlight()
             return
 
-        if self.update_drag_hover_at_position(
-            self._viewport_position_from_event(event),
-            dragging_sample_id=sample_id,
-        ):
-            self._accept_sample_move_action(event)
+        if self._local_file_paths_from_mime(event.mimeData()):
+            if self.update_file_drag_hover_at_position(position):
+                self._accept_file_copy_action(event)
+                return
+            event.ignore()
+            self._clear_drop_highlight()
             return
 
         event.ignore()
@@ -754,18 +839,23 @@ class ExplorerTreeWidget(QTreeWidget):
 
     def dropEvent(self, event) -> None:  # noqa: N802 - Qt API
         sample_id = self._sample_id_from_mime(event.mimeData())
-        if sample_id is None:
+        position = self._viewport_position_from_event(event)
+        if sample_id is not None:
+            if self.drop_sample_at_position(
+                position,
+                dragging_sample_id=sample_id,
+            ):
+                self._accept_sample_move_action(event)
+                return
             event.ignore()
-            self._clear_drop_highlight()
             return
 
-        if self.drop_sample_at_position(
-            self._viewport_position_from_event(event),
-            dragging_sample_id=sample_id,
-        ):
-            self._accept_sample_move_action(event)
+        paths = self._local_file_paths_from_mime(event.mimeData())
+        if paths and self.drop_files_at_position(position, paths):
+            self._accept_file_copy_action(event)
             return
         event.ignore()
+        self._clear_drop_highlight()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt API
         item = self.itemAt(event.position().toPoint())

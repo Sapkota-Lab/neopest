@@ -63,6 +63,7 @@ class TestCalibrationMath(unittest.TestCase):
         self.assertEqual(record.known_distance_unit, KNOWN_ONE_INCH_DISTANCE_UNIT)
         self.assertAlmostEqual(record.known_distance_mm, ONE_INCH_MM)
         self.assertAlmostEqual(record.pixels_per_mm, 10.0)
+        self.assertEqual(record.pixel_grid, "oriented-v1")
 
     def test_pixels_per_mm_from_one_inch_points(self) -> None:
         pixels_per_mm = calculate_pixels_per_mm((0.0, 0.0), (100.0, 0.0), ONE_INCH_MM)
@@ -96,6 +97,8 @@ class TestCalibrationPersistence(unittest.TestCase):
         self.assertEqual(restored.known_distance_value, 1.0)
         self.assertEqual(restored.known_distance_unit, DISTANCE_UNIT_IN)
         self.assertEqual(restored.entered_distance_label(), "1 in")
+        self.assertEqual(restored.pixel_grid, "oriented-v1")
+        self.assertEqual(record.to_dict()["pixel_grid"], "oriented-v1")
 
     def test_legacy_metadata_with_only_known_distance_mm_loads(self) -> None:
         legacy = {
@@ -110,6 +113,8 @@ class TestCalibrationPersistence(unittest.TestCase):
             "notes": "",
         }
         record = CalibrationRecord.from_dict(legacy)
+        self.assertIsNone(record.pixel_grid)
+        self.assertNotIn("pixel_grid", record.to_dict())
         self.assertEqual(record.known_distance_value, 5.0)
         self.assertEqual(record.known_distance_unit, DISTANCE_UNIT_MM)
         self.assertEqual(record.entered_distance_label(), "5 mm")
@@ -137,6 +142,7 @@ class TestCalibrationPersistence(unittest.TestCase):
             sample_payload = payload["samples"][0]["calibration"]
             self.assertEqual(sample_payload["known_distance_value"], 1.0)
             self.assertEqual(sample_payload["known_distance_unit"], DISTANCE_UNIT_IN)
+            self.assertEqual(sample_payload["pixel_grid"], "oriented-v1")
             self.assertAlmostEqual(sample_payload["known_distance_mm"], 25.4)
 
     def test_existing_uncalibrated_sample_loads_safely(self) -> None:

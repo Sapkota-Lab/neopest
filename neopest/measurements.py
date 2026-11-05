@@ -320,8 +320,14 @@ def format_coverage_percent_display(value: float | None) -> str:
     return f"{value:.{DISPLAY_COVERAGE_DECIMAL_PLACES}f}%"
 
 
-def phase5_result_is_current(sample: SampleRecord) -> bool:
+def phase5_result_is_current(
+    sample: SampleRecord,
+    *,
+    calibration_grid_matches: bool = True,
+) -> bool:
     """Return True when the Phase 5 combined result is current and displayable."""
+    if not calibration_grid_matches:
+        return False
     return candidate_disease_measurement_matches_provenance(
         sample.candidate_disease_measurement,
         calibration=sample.calibration,
@@ -337,12 +343,20 @@ def phase5_result_status_display(
     sample: SampleRecord,
     *,
     calculation_failed: bool = False,
+    calibration_grid_matches: bool = True,
 ) -> str:
     """Return the researcher-facing Phase 5 result status label."""
-    if phase5_result_is_current(sample):
+    if phase5_result_is_current(
+        sample,
+        calibration_grid_matches=calibration_grid_matches,
+    ):
         return CURRENT_RESULT_DISPLAY
     if calculation_failed and sample.candidate_disease_measurement is None:
         return CALCULATION_FAILED_DISPLAY
+    if not calibration_grid_matches:
+        if sample.candidate_disease_measurement is not None:
+            return RECALCULATION_REQUIRED_DISPLAY
+        return CALIBRATION_REQUIRED_DISPLAY
     if sample.calibration is None:
         measurement = sample.candidate_disease_measurement
         if measurement is not None and measurement.status == "stale":
@@ -372,12 +386,20 @@ def phase5_measurement_row_placeholder(
     sample: SampleRecord,
     *,
     calculation_failed: bool = False,
+    calibration_grid_matches: bool = True,
 ) -> str:
     """Return the non-numeric placeholder shown for all measurement rows."""
-    if phase5_result_is_current(sample):
+    if phase5_result_is_current(
+        sample,
+        calibration_grid_matches=calibration_grid_matches,
+    ):
         raise ValueError("current results must use formatted numeric values")
     if calculation_failed and sample.candidate_disease_measurement is None:
         return CALCULATION_FAILED_DISPLAY
+    if not calibration_grid_matches:
+        if sample.candidate_disease_measurement is not None:
+            return RECALCULATION_REQUIRED_DISPLAY
+        return CALIBRATION_REQUIRED_DISPLAY
     if sample.calibration is None:
         return CALIBRATION_REQUIRED_DISPLAY
     measurement = sample.candidate_disease_measurement

@@ -30,6 +30,8 @@ venv/
 *.tif
 *.tiff
 *.bmp
+*.heic
+*.heif
 
 # Release archives
 *.zip
